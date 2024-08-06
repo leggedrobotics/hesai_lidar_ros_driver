@@ -29,7 +29,12 @@
  */
 
 #pragma once
+#include <iterator>
+		
+
 #include <ros/ros.h>
+#include <rosbag/bag.h>
+#include <rosbag/view.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include "hesai_ros_driver/UdpFrame.h"
 #include "hesai_ros_driver/UdpPacket.h"
@@ -55,13 +60,24 @@ public:
     ros::MultiThreadedSpinner spinner(2); 
     spinner.spin();
   }
+  rosbag::Bag outBag;
+  std::vector<std::string> topics_new;
+  bool availableMsg_ = true;
+  ros::Timer timer;
+  rosbag::View view;
+  int ite = 0;
+  bool hasStarted = false;
+  rosbag::Bag bag;
 protected:
   // Save packets subscribed by 'ros_recv_packet_topic'
   void RecievePacket(const hesai_ros_driver::UdpFrame& msg);
+
+  void readBagAndLoadData();
   // Used to publish point clouds through 'ros_send_point_cloud_topic'
   void SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
   // Used to publish the original pcake through 'ros_send_packet_topic'
   void SendPacket(const UdpFrame_t&  ros_msg, double);
+  std::string buildUpLogFilename(const std::string& typeSuffix, const std::string& extension = ".txt");
   // Convert point clouds into ROS messages
   sensor_msgs::PointCloud2 ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id);
   // Convert packets into ROS messages
@@ -122,8 +138,16 @@ inline void SourceDriver::Init(const YAML::Node& config)
   std::string ros_send_point_topic;
   YamlRead<std::string>(config["ros"], "ros_send_point_cloud_topic", ros_send_point_topic, "hesai_points");
 
+  std::string outBagPath_ = SourceDriver::buildUpLogFilename("processed_slam", ".bag");
+  std::remove(outBagPath_.c_str());
+  outBag.open(outBagPath_, rosbag::bagmode::Write);
+
+  
+  topics_new.push_back("/gt_box/hesai/packets");
+
   nh_ = std::unique_ptr<ros::NodeHandle>(new ros::NodeHandle());
   if (send_point_cloud_ros) {
+    std::cout << "send_point_cloud_ros" << std::endl;
     std::string ros_send_point_topic;
     YamlRead<std::string>(config["ros"], "ros_send_point_cloud_topic", ros_send_point_topic, "hesai_points");
     pub_ = nh_->advertise<sensor_msgs::PointCloud2>(ros_send_point_topic, 10);
@@ -136,33 +160,162 @@ inline void SourceDriver::Init(const YAML::Node& config)
   }
 
   if (driver_param.input_param.source_type == DATA_FROM_ROS_PACKET) {
+    std::cout << "source type is ros packet" << std::endl;
     std::string ros_recv_packet_topic;
     YamlRead<std::string>(config["ros"], "ros_recv_packet_topic", ros_recv_packet_topic, "hesai_packets");
-    pkt_sub_ = nh_->subscribe(ros_recv_packet_topic, 100, &SourceDriver::RecievePacket, this);
+    pkt_sub_ = nh_->subscribe(ros_recv_packet_topic, 10000, &SourceDriver::RecievePacket, this);
     driver_param.decoder_param.enable_udp_thread = false;
     subscription_spin_thread_ = new boost::thread(boost::bind(&SourceDriver::SpinRos1,this));
   }
 
-  #ifdef __CUDACC__
-    driver_ptr_.reset(new HesaiLidarSdkGpu<LidarPointXYZIRT>());
-    driver_param.decoder_param.enable_parser_thread = false;
-  #else
-    driver_ptr_.reset(new HesaiLidarSdk<LidarPointXYZIRT>());
-    driver_param.decoder_param.enable_parser_thread = true;
-  #endif
+  std::cout << "driver_ptr_.reset" << std::endl;
+  driver_ptr_.reset(new HesaiLidarSdk<LidarPointXYZIRT>());
+  driver_param.decoder_param.enable_parser_thread = true;
+
+  //SourceDriver::readBagAndLoadData();
+
+  std::cout << "RegRecvCallback" << std::endl;
   driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPointCloud, this, std::placeholders::_1));
-  if(send_packet_ros && driver_param.input_param.source_type != DATA_FROM_ROS_PACKET){
-    driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacket, this, std::placeholders::_1, std::placeholders::_2)) ;
-  } 
+  // if(send_packet_ros && driver_param.input_param.source_type != DATA_FROM_ROS_PACKET){
+  //   driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacket, this, std::placeholders::_1, std::placeholders::_2)) ;
+  // } 
+
+  std::cout << "before driver_param\n";
   if (!driver_ptr_->Init(driver_param))
   {
     std::cout << "Driver Initialize Error...." << std::endl;
     exit(-1);
   }
+
+  std::cout << "start called\n";
+  //driver_ptr_->Start();
+
+
+  std::cout << "CALLING OPEN" << std::endl;
+  // rosbag::Bag bag;
+  //bag.open("/home/tutuna/Downloads/celeri_tunnel/perception_box/1980-01-06-01-35-55_nuc_hesai_1.bag", rosbag::bagmode::Read);
+  // //rosbag::View view(bag, rosbag::TopicQuery(topics_new));
+  // view.addQuery(bag);
+
+  // std::cout << "RECEIVED DATA" << std::endl;
+  // view.getBeginTime();
+  // time_end_ = view.getEndTime();
+  driver_ptr_->RegRecvCallback2(std::bind(&SourceDriver::readBagAndLoadData, this));
+
+
+
+  // rosbag::MessageInstance& currentMsg = *it;
+  // hesai_ros_driver::UdpFrame::ConstPtr myhesaiFrame = currentMsg.instantiate<hesai_ros_driver::UdpFrame>();
+  // for (int i = 0; i < myhesaiFrame->packets.size(); i++) {
+  //     driver_ptr_->lidar_ptr_->origin_packets_buffer_.emplace_back(&myhesaiFrame->packets[i].data[0], myhesaiFrame->packets[i].size);
+  // }
+
+  // std::cout << "TIMER NOT YET CALLED" << std::endl;
+  // timer = nh_->createTimer(ros::Duration(1.0 / 100.0),
+  //                     std::bind(&SourceDriver::readBagAndLoadData, this));
+
 }
+
+inline void SourceDriver::readBagAndLoadData() {
+
+  if (!availableMsg_)
+  {
+    std::cout << "EARLY RETURN availableMsg_ = FALSE" << std::endl;
+    return;
+  }
+
+  if (!driver_ptr_)
+  {
+    std::cout << "Driver not yet started" << std::endl;
+    return;
+  }
+  
+  //rosbag::MessageInstance& beginMsg = *view.begin();
+  
+
+  std::vector<std::string> tt;
+  tt.push_back("/gt_box/hesai/packets");
+  rosbag::View::iterator it;
+  rosbag::View view2(bag, rosbag::TopicQuery(tt));
+  // it = view2.begin();
+  // std::advance(it, 0);
+
+  // rosbag::MessageInstance& currentMsg = *it;
+  // if (currentMsg.getTopic() == "/gt_box/hesai/packets") {
+  //   if (currentMsg.getDataType() == "hesai_ros_driver/UdpFrame") {
+
+  //     hesai_ros_driver::UdpFrame::ConstPtr myhesaiFrame = currentMsg.instantiate<hesai_ros_driver::UdpFrame>();
+  //     std::cout << "myhesaiFrame->packets.size() " << myhesaiFrame->packets.size() << std::endl;
+
+  //     for (int i = 0; i < myhesaiFrame->packets.size(); i++) {
+  //         driver_ptr_->lidar_ptr_->origin_packets_buffer_.emplace_back(&myhesaiFrame->packets[i].data[0], myhesaiFrame->packets[i].size);
+  //     }
+
+  //     availableMsg_ = false;
+  //     return;
+  //   }else{
+  //     std::cout << "EARLY RETURN currentMsg.getDataType()" << std::endl;
+  //   }
+      
+  // }else{
+  //   std::cout << "EARLY RETURN currentMsg.getTopic() " << currentMsg.getTopic() << std::endl;
+  // }
+
+  // std::advance(it, 1);
+  // std::cout << "advanced" << std::endl;
+
+
+  // Give me the 5th message in the bag file
+  // rosbag::View view(bag, rosbag::TopicQuery(topics_new));
+  // rosbag::View::iterator it = view.begin();
+  // std::advance(it, 5);
+  // rosbag::MessageInstance& msg = *it;
+  std::cout << "BAG LOADING CALLED" << std::endl;
+
+  for (const auto& messageInstance : view2) {
+  //   // if (!ros::ok()) {
+  //   //   return;
+  //   // }
+
+    // Hesai.
+    if (messageInstance.getTopic() == "/gt_box/hesai/packets") {
+      if (messageInstance.getDataType() == "hesai_ros_driver/UdpFrame") {
+        hesai_ros_driver::UdpFrame::ConstPtr hesaiFrame = messageInstance.instantiate<hesai_ros_driver::UdpFrame>();
+        if (hesaiFrame != nullptr) {
+          //std::cout << "RECEIVED DATA" << std::endl;
+            for (int i = 0; i < hesaiFrame->packets.size(); i++) {
+              driver_ptr_->lidar_ptr_->origin_packets_buffer_.emplace_back(&hesaiFrame->packets[i].data[0], hesaiFrame->packets[i].size);
+          }
+          availableMsg_ = false;
+        }
+      }
+    }
+
+  } // forr
+
+  std::cout << "LOADING DONE" << std::endl;
+
+  return;
+
+}
+
+inline std::string SourceDriver::buildUpLogFilename(const std::string& typeSuffix, const std::string& extension) {
+  ros::WallTime stamp = ros::WallTime::now();
+  std::stringstream ss;
+  ss << stamp.sec << "_" << stamp.nsec;
+
+  // Add prefixes.
+  // Not sure if adding time is the best thing to do since we dont keep a ring buffer.
+  // std::string filename = slam_->mapSavingFolderPath_ + typeSuffix + ss.str() + extension;
+  std::string filename = "/home/tutuna/box_ws/src/grand_tour_box/box_drivers/hesai_lidar_ros_driver/launch/" + typeSuffix + extension;
+
+  return filename;
+  }
 
 inline void SourceDriver::Start()
 {
+  printf("START CALLED\n");
+  //hasStarted = true;
   driver_ptr_->Start();
 }
 
@@ -173,6 +326,8 @@ inline SourceDriver::~SourceDriver()
 
 inline void SourceDriver::Stop()
 {
+  printf("stop CALLED\n");
+  outBag.close();
   driver_ptr_->Stop();
 }
 
@@ -183,17 +338,28 @@ inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
-  pub_.publish(ToRosMsg(msg, frame_id_));
+  // printf("Listening test\n");
+  sensor_msgs::PointCloud2 ros_msg = ToRosMsg(msg, frame_id_);
+  //pub_.publish(ToRosMsg(msg, frame_id_));
+  availableMsg_ = true;
 }
 
 inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
+  printf("ToRosMsg test\n");
   sensor_msgs::PointCloud2 ros_msg;
+
+  uint32_t ssize = frame.points_num;
+  if (ssize > 64000)
+  {
+    ssize = 64000;
+  }
+  
 
   int fields = 6;
   ros_msg.fields.clear();
   ros_msg.fields.reserve(fields);
-  ros_msg.width = frame.points_num; 
+  ros_msg.width = ssize; 
   ros_msg.height = 1; 
 
   int offset = 0;
@@ -207,7 +373,7 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
   ros_msg.point_step = offset;
   ros_msg.row_step = ros_msg.width * ros_msg.point_step;
   ros_msg.is_dense = false;
-  ros_msg.data.resize(frame.points_num * ros_msg.point_step);
+  ros_msg.data.resize(ssize * ros_msg.point_step);
 
   sensor_msgs::PointCloud2Iterator<float> iter_x_(ros_msg, "x");
   sensor_msgs::PointCloud2Iterator<float> iter_y_(ros_msg, "y");
@@ -215,7 +381,8 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
   sensor_msgs::PointCloud2Iterator<float> iter_intensity_(ros_msg, "intensity");
   sensor_msgs::PointCloud2Iterator<uint16_t> iter_ring_(ros_msg, "ring");
   sensor_msgs::PointCloud2Iterator<double> iter_timestamp_(ros_msg, "timestamp");
-  for (size_t i = 0; i < frame.points_num; i++)
+
+  for (size_t i = 0; i < ssize; i++)
   {
     LidarPointXYZIRT point = frame.points[i];
     *iter_x_ = point.x;
@@ -231,14 +398,17 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
     ++iter_ring_;
     ++iter_timestamp_;   
   }
-  printf("frame:%d points:%u packet:%d start time:%lf end time:%lf\n",frame.frame_index, frame.points_num, frame.packet_num, frame.points[0].timestamp, frame.points[frame.points_num - 1].timestamp) ;
+  printf("frame:%d points:%u packet:%d start time:%.17g end time:%.17g\n",frame.frame_index, ssize, frame.packet_num, frame.points[0].timestamp, frame.points[ssize - 1].timestamp) ;
+
   // ros_msg.header.seq = s;
   ros_msg.header.stamp = ros::Time().fromSec(frame.points[0].timestamp);
   ros_msg.header.frame_id = frame_id_;
+  outBag.write("/hesai_points", ros::Time().fromSec(frame.points[0].timestamp), ros_msg);
   return ros_msg;
 }
 
 inline hesai_ros_driver::UdpFrame SourceDriver::ToRosMsg(const UdpFrame_t& ros_msg, double timestamp) {
+  printf("ToRosMsg1123131 test\n");
   hesai_ros_driver::UdpFrame rs_msg;
   for (int i = 0 ; i < ros_msg.size(); i++) {
     hesai_ros_driver::UdpPacket rawpacket;

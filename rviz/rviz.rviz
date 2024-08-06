@@ -217,7 +217,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.05000000074505806
       Style: Flat Squares
-      Topic: /lidar_points5
+      Topic: /gt_box/hesai/points
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -312,6 +312,7 @@ Visualization Manager:
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
+      Field of View: 0.7853981852531433
       Focal Point:
         X: 3.932443618774414
         Y: -6.068606853485107
@@ -323,7 +324,6 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Pitch: 0.335399329662323
       Target Frame: <Fixed Frame>
-      Value: Orbit (rviz)
       Yaw: 1.738570213317871
     Saved: ~
 Window Geometry:
@@ -342,5 +342,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1267
-  X: 514
-  Y: 27
+  X: 3118
+  Y: 127

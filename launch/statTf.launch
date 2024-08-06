@@ -1,0 +1,16 @@
+<launch>
+  <arg name="use_sim_time" default="true"/>
+
+  <!-- static_transform_publisher x y z yaw pitch roll frame_id child_frame_id period_in_ms -->
+  <!-- static_transform_publisher x y z qx qy qz qw frame_id child_frame_id  period_in_ms -->
+  <!-- <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="-0.086 -0.000 -0.128 -0.704 0.704 0.062 -0.062 zed_base_link hesaiXT32 10" />
+  <node pkg="tf" type="static_transform_publisher" name="link2_broadcaster" args="-0.010 0.060 0.015 -0.500 0.500 -0.500 0.500 zed_base_link zed2i_left_camera_optical_frame 10" /> -->
+  <!-- <node pkg="tf" type="static_transform_publisher" name="link2_broadcaster" args="-0.060 -0.050 -0.154 0.766 0.000 0.000 0.642 hesaiXT32 zed2i_left_camera_optical_frame 1"  /> -->
+
+   <param name="use_sim_time" value="true"/>
+  <node pkg="tf" type="static_transform_publisher" name="link2_broadcaster" args="-0.060 -0.050 -0.154 0.766 0.000 0.000 0.642 hesaiXT32 zed2i_left_camera_optical_frame 1" > <!-- launch-prefix="gdb -ex run args"> -->
+    <param name="/use_sim_time" value="$(arg use_sim_time)"/>
+  </node>
+
+
+</launch>

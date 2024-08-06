@@ -33,10 +33,8 @@ set(PROJECT_NAME hesai_ros_driver)
 
 add_definitions(-DPROJECT_PATH="${PROJECT_SOURCE_DIR}")
 
-if (CMAKE_BUILD_TYPE STREQUAL "")
-  set(CMAKE_BUILD_TYPE Release)
-  add_definitions(-O3)
-endif()
+set(CMAKE_BUILD_TYPE Release)
+add_definitions(-O3)
 
 if($ENV{ROS_DISTRO} STREQUAL "humble")  # the ros2 humble requires c++17
 add_definitions(-std=c++17)
@@ -55,8 +53,9 @@ add_compile_options(-Wall)
 if($ENV{ROS_VERSION} MATCHES "1")
   find_package(roscpp 1.12 QUIET)
   find_package(roslib QUIET)
-  include_directories(${roscpp_INCLUDE_DIRS} ${roslib_INCLUDE_DIRS})
-  set(ROS_LIBS ${roscpp_LIBRARIES} ${roslib_LIBRARIES})
+  find_package(rosbag REQUIRED)
+  include_directories(${roscpp_INCLUDE_DIRS} ${roslib_INCLUDE_DIRS} ${rosbag_INCLUDE_DIRS})
+  set(ROS_LIBS ${roscpp_LIBRARIES} ${roslib_LIBRARIES} ${rosbag_LIBRARIES})
   add_definitions(-DROS_FOUND)
   add_definitions(-DRUN_IN_ROS_WORKSPACE)
 
@@ -65,7 +64,8 @@ if($ENV{ROS_VERSION} MATCHES "1")
     sensor_msgs
     std_msgs
     message_generation
-    roslib)
+    roslib
+    rosbag)
 
   add_message_files(
     FILES
@@ -81,49 +81,10 @@ if($ENV{ROS_VERSION} MATCHES "1")
 
   catkin_package(CATKIN_DEPENDS 
     sensor_msgs 
-    roslib)
+    roslib
+    rosbag)
 
 endif($ENV{ROS_VERSION} MATCHES "1")
-
-#ROS2#
-if($ENV{ROS_VERSION} MATCHES "2")
-
-  find_package(rclcpp QUIET)
-  if(rclcpp_FOUND)
-
-    message(=============================================================)
-    message("-- ROS2 Found. ROS2 Support is turned On.")
-    message(=============================================================)
-
-    add_definitions(-DROS2_FOUND)
-    include_directories(${rclcpp_INCLUDE_DIRS})
-    set(CMAKE_CXX_STANDARD 14)
-
-    find_package(ament_cmake REQUIRED)
-    find_package(sensor_msgs REQUIRED)
-    find_package(std_msgs REQUIRED)  
-    find_package(rclcpp_action REQUIRED)
-    find_package(rosidl_typesupport_c REQUIRED) 
-    find_package(rosidl_default_generators REQUIRED)
-    find_package(builtin_interfaces REQUIRED)
-    find_package(std_msgs REQUIRED)
-    
-    rosidl_generate_interfaces(${PROJECT_NAME}
-      "msg/msg_ros2/UdpPacket.msg"
-      "msg/msg_ros2/UdpFrame.msg"
-      DEPENDENCIES builtin_interfaces std_msgs
-    )
-    ament_export_dependencies(rosidl_default_runtime)                 
-    
-  else(rclcpp_FOUND)
-
-    message(=============================================================)
-    message("-- ROS2 Not Found. ROS2 Support is turned Off.")
-    message(=============================================================)
-
-  endif(rclcpp_FOUND )
-endif($ENV{ROS_VERSION} MATCHES "2")
-
 
 #Others#
 find_package(yaml-cpp REQUIRED)
@@ -144,57 +105,75 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/src/driver/hesai_lidar_sdk)
 #                )
 
 
-find_package(CUDA)
-if(CUDA_FOUND)
+# find_package(CUDA)
+# if(CUDA_FOUND)
   
-  message(=============================================================)
-  message("-- CUDA Found. CUDA Support is turned On.")
-  message(=============================================================)
+#   message(=============================================================)
+#   message("-- CUDA Found. CUDA Support is turned On.")
+#   message(=============================================================)
 
-  link_directories($ENV{CUDA_PATH}/lib/x64)
-  set(CUDA_NVCC_FLAGS "-arch=sm_75;-O2;-std=c++17")#根据具体GPU性能更改算力参数
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -rdc=true")
-  list(APPEND CUDA_NVCC_FLAGS -Xcompiler -fPIC)
+#   link_directories($ENV{CUDA_PATH}/lib/x64)
+#   set(CUDA_NVCC_FLAGS "-arch=sm_75;-O2;-std=c++17")#根据具体GPU性能更改算力参数
+#   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -rdc=true")
+#   list(APPEND CUDA_NVCC_FLAGS -Xcompiler -fPIC)
 
-  CUDA_ADD_EXECUTABLE(hesai_ros_driver_node
-                node/hesai_ros_driver_node.cu
-                src/manager/node_manager.cu
-                ./src/driver/hesai_lidar_sdk/libhesai/UdpParserGpu/src/buffer.cu
-                )
-  set(CUDA_LIBS "${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcudart.so")
+#   CUDA_ADD_EXECUTABLE(hesai_ros_driver_node
+#                 node/hesai_ros_driver_node.cu
+#                 src/manager/node_manager.cu
+#                 ./src/driver/hesai_lidar_sdk/libhesai/UdpParserGpu/src/buffer.cu
+#                 )
+#   set(CUDA_LIBS "${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcudart.so")
 
-  target_link_libraries(hesai_ros_driver_node                   
-                ${YAML_CPP_LIBRARIES}
-                ${Boost_LIBRARIES}
-                source_lib
-                container_lib
-                ptcClient_lib
-                ptcParser_lib
-                log_lib
-                ${CUDA_LIBS}
-                # libhesai
-    )
-else(CUDA_FOUND)
+#   target_link_libraries(hesai_ros_driver_node                   
+#                 ${YAML_CPP_LIBRARIES}
+#                 ${Boost_LIBRARIES}
+#                 source_lib
+#                 container_lib
+#                 ptcClient_lib
+#                 ptcParser_lib
+#                 log_lib
+#                 ${CUDA_LIBS}
+#                 # libhesai
+#     )
+# else(CUDA_FOUND)
 
-  message(=============================================================)
-  message("-- CUDA Not Found. CUDA Support is turned Off.")
-  message(=============================================================)
-  add_executable(hesai_ros_driver_node
-                node/hesai_ros_driver_node.cc
-                src/manager/node_manager.cc
-                )
-  target_link_libraries(hesai_ros_driver_node                   
-              ${YAML_CPP_LIBRARIES}
-              ${Boost_LIBRARIES}
-              source_lib
-              container_lib
-              ptcClient_lib
-              ptcParser_lib
-              log_lib
-              # libhesai
-  )            
+#   message(=============================================================)
+#   message("-- CUDA Not Found. CUDA Support is turned Off.")
+#   message(=============================================================)
+#   add_executable(hesai_ros_driver_node
+#                 node/hesai_ros_driver_node.cc
+#                 src/manager/node_manager.cc
+#                 )
+#   target_link_libraries(hesai_ros_driver_node                   
+#               ${YAML_CPP_LIBRARIES}
+#               ${Boost_LIBRARIES}
+#               source_lib
+#               container_lib
+#               ptcClient_lib
+#               ptcParser_lib
+#               log_lib
+#               # libhesai
+#   )            
 
-endif(CUDA_FOUND)
+# endif(CUDA_FOUND)
+
+message(=============================================================)
+message("-- CUDA Not Found. CUDA Support is turned Off.")
+message(=============================================================)
+add_executable(hesai_ros_driver_node
+              node/hesai_ros_driver_node.cc
+              src/manager/node_manager.cc
+              )
+target_link_libraries(hesai_ros_driver_node                   
+            ${YAML_CPP_LIBRARIES}
+            ${Boost_LIBRARIES}
+            source_lib
+            container_lib
+            ptcClient_lib
+            ptcParser_lib
+            log_lib
+            # libhesai
+)            
 
 
   target_include_directories(hesai_ros_driver_node PRIVATE
@@ -232,35 +211,3 @@ if($ENV{ROS_VERSION} MATCHES "1")
           LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
           ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
 endif($ENV{ROS_VERSION} MATCHES "1")
-
-
-#Ros2#
-
-if($ENV{ROS_VERSION} MATCHES "2")
-  find_package(ament_index_cpp REQUIRED)
-  ament_target_dependencies(hesai_ros_driver_node 
-  "ament_index_cpp"
-  "rcl_interfaces"
-  "rclcpp" 
-  "rcutils"
-  "std_msgs" 
-  "sensor_msgs" 
-  # "tf2_geometry_msgs"
-  )
-  rosidl_target_interfaces(hesai_ros_driver_node  ${PROJECT_NAME} "rosidl_typesupport_cpp")
-
-  install(TARGETS
-    hesai_ros_driver_node
-    DESTINATION lib/${PROJECT_NAME})
-
-  install(DIRECTORY
-    launch
-    rviz
-    DESTINATION share/${PROJECT_NAME})
-    
-
-  ament_package()
-
-endif($ENV{ROS_VERSION} MATCHES "2")
-
-

@@ -7,7 +7,7 @@ lidar:
       pcap_path: "Your pcap file path" #The path of pcap file
       correction_file_path: "/home/ttuna/hesai_ws/src/grand_tour_box/box_bringup/bringup_hesai/config/PandarXT-32.csv" #The path of correction file
       firetimes_path: "/home/ttuna/hesai_ws/src/grand_tour_box/box_bringup/bringup_hesai/config/PandarXT-32_firetime_correction.csv" #The path of firetimes file
-      source_type: 1                   #The type of data source, 1: real-time lidar connection, 2: pcap, 3: packet rosbag    
+      source_type: 3                   #The type of data source, 1: real-time lidar connection, 2: pcap, 3: packet rosbag    
       frame_start_azimuth: 200               #Frame azimuth for Pandar128, range from 1 to 359, set it less than 0 if you 
                                        #do not want to use it.
       #transform param
@@ -19,8 +19,8 @@ lidar:
       yaw: 0
     ros:
       ros_frame_id: hesai_lidar                      #Frame id of packet message and point cloud message
-      ros_recv_packet_topic: /lidar_packets         #Topic used to receive lidar packets from rosbag
+      ros_recv_packet_topic: /hesai/packets         #Topic used to receive lidar packets from rosbag
       ros_send_packet_topic: /lidar_packets         #Topic used to send lidar raw packets through ROS
-      ros_send_point_cloud_topic: /lidar_points     #Topic used to send point cloud through ROS
-      send_packet_ros: true                          #true: Send packets through ROS 
+      ros_send_point_cloud_topic: /hesai/test_points     #Topic used to send point cloud through ROS
+      send_packet_ros: false                          #true: Send packets through ROS 
       send_point_cloud_ros: true                     #true: Send point cloud through ROS    
