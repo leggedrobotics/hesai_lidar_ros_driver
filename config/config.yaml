@@ -28,6 +28,7 @@ lidar:
     ros:
       ros_frame_id: hesaiXT32                     #Frame id of packet message and point cloud message
       save_replayed_topics_to_rosbag: false
+      input_rosbag_path: "/home/tutuna/box_ws/src/grand_tour_box/box_drivers/novatel_oem7_driver/src/novatel_oem7_driver/data/2024-08-14-10-45-39_nuc_hesai_1.bag"
       output_rosbag_directory: /tmp/  #if left empty, it will save to /data in this driver.
       # Topic used to monitor packets loss condition through ROS
       ros_send_packet_loss_topic: /gt_box/hesai/lidar_packets_loss

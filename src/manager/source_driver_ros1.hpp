@@ -29,8 +29,10 @@
  */
 
 #pragma once
+#include <csignal>
 #include <ros/ros.h>
 #include <rosbag/bag.h>
+#include <rosbag/view.h>
 #include "std_msgs/UInt8MultiArray.h"
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include "hesai_ros_driver/UdpFrame.h"
@@ -58,8 +60,16 @@ public:
     spinner.spin();
   }
   rosbag::Bag outputBag;
+  mutable std::mutex rosbagMutex_;
   ros::Time latestCloudStamp_;
   bool save_replayed_topics_to_rosbag_ = false;
+  bool exitting_ = false;
+  ros::Time bagStartTime_;
+  ros::Time bagEndTime_;
+  uint64_t duration_ = 0;
+  std::string input_rosbag_path_ = std::string();
+  std::mutex receive_packet_mutex_;
+  uint64_t sequenceNumberPacket_ = 0;
   #ifdef __CUDACC__
     std::shared_ptr<HesaiLidarSdkGpu<LidarPointXYZIRT>> driver_ptr_;
   #else
@@ -125,6 +135,50 @@ inline void SourceDriver::Init(const YAML::Node& config)
   frame_id_ = driver_param.input_param.frame_id;
 
   save_replayed_topics_to_rosbag_ = driver_param.input_param.save_replayed_topics_to_rosbag;
+  input_rosbag_path_ = driver_param.input_param.input_rosbag_path;
+
+  if (save_replayed_topics_to_rosbag_)
+  {
+
+    if (input_rosbag_path_ != "")
+    {
+      ROS_WARN_STREAM("Input rosbag path: " << input_rosbag_path_);
+
+      // We need to do a dry-run on the rosbag to get the end time of the rosbag.
+      rosbag::Bag inputBag;
+      inputBag.open(input_rosbag_path_, rosbag::bagmode::Read);
+      std::vector<std::string> viewtopics;
+      viewtopics.push_back(driver_param.input_param.ros_recv_packet_topic);
+      rosbag::View view(inputBag, rosbag::TopicQuery(viewtopics));
+
+      ROS_WARN_STREAM("ROS bag begin time: " << view.getBeginTime().toSec() << " ROS bag end time: "
+                                          << view.getEndTime().toSec() << " s");
+      // ros::Duration rosbag_duration = view.getEndTime() - view.getBeginTime();
+
+      bagStartTime_ = view.getBeginTime();
+      bagEndTime_ = view.getEndTime();
+      duration_ = bagEndTime_.toNSec() - bagStartTime_.toNSec();
+    }else{
+      ROS_ERROR_STREAM("Input rosbag path is empty. Exiting...");
+      ros::shutdown();
+      exit(-1);
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      raise(SIGINT);
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      raise(SIGABRT);
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      exit(-1);
+
+    }
+    
+
+    ROS_INFO_STREAM("\033[92m"
+                << " In the replay mode. Sleeping for a second to allow the rosbag to start playing."
+                << "\033[0m");
+    const ros::WallTime first{ros::WallTime::now() + ros::WallDuration(0.5)};
+    ros::WallTime::sleepUntil(first);
+  }
 
   if (driver_param.input_param.send_point_cloud_ros) {
     pub_ = nh_->advertise<sensor_msgs::PointCloud2>(driver_param.input_param.ros_send_point_topic, 10);
@@ -190,20 +244,17 @@ inline void SourceDriver::Init(const YAML::Node& config)
     std::cout << "Driver Initialize Error...." << std::endl;
     exit(-1);
   }
-  // We use sim time true so should be okay.
+  // We use sim time true so should be okay. This is just for init.
   latestCloudStamp_ = ros::Time::now();
   // print ros time now
-  std::cout << "ros time now:" << latestCloudStamp_ << std::endl;
+  std::cout << "Ros Time now: " << latestCloudStamp_ << std::endl;
 
   if (save_replayed_topics_to_rosbag_)
   {
     std::string outBagPath_ ="";
-    // Get the directory of the ros package
-    // std::string packagePath = ros::package::getPath("hesai_ros_driver");
-      
     // Generate the log file name
     std::string outBagDirectory_ = ros::package::getPath("hesai_ros_driver") + "/data/";
-    std::string outBagName_ = "hesaiXT32_" + std::to_string(ros::Time::now().toSec()) + ".bag";
+    std::string outBagName_ = "hesaiXT32_" + std::to_string(ros::Time::now().toNSec()) + ".bag";
 
     if (driver_param.input_param.output_rosbag_directory != "") {
       outBagPath_ = driver_param.input_param.output_rosbag_directory + outBagName_;
@@ -233,7 +284,11 @@ inline SourceDriver::~SourceDriver()
 
 inline void SourceDriver::Stop()
 {
-  outputBag.close();
+  {
+    std::lock_guard<std::mutex> lock(rosbagMutex_);
+    outputBag.close();
+  }
+  std::cout << "Rosbag Closed." << std::endl;
   driver_ptr_->Stop();
 }
 
@@ -245,6 +300,17 @@ inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
   pub_.publish(ToRosMsg(msg, frame_id_));
+
+  if (exitting_)
+  {
+    std::cout << "Node will be shut." << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // raise(SIGINT);
+    // ros::shutdown();
+    // std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // exit(EXIT_SUCCESS);
+  }
+  
 }
 
 inline void SourceDriver::SendCorrection(const u8Array_t& msg)
@@ -327,11 +393,54 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
   // ros_msg.header.seq = s;
 
   latestCloudStamp_ = ros::Time().fromSec(frame.points[0].timestamp);
+  ros::Time lastPointStamp_ = ros::Time().fromSec(frame.points[frame.points_num - 1].timestamp);
   ros_msg.header.stamp = latestCloudStamp_;
   ros_msg.header.frame_id = frame_id_;
+
+  sensor_msgs::PointCloud2 ros_msg_last = ros_msg;
+  ros_msg_last.header.stamp = lastPointStamp_;
+  // ros::Duration duration = lastPointStamp_ - latestCloudStamp_;
+  // ROS_INFO_STREAM("Duration: " << duration.toSec());
+  
+  {
+    std::lock_guard<std::mutex> lock(receive_packet_mutex_);
+    ros_msg.header.seq = sequenceNumberPacket_;
+  }
+  ros_msg_last.header.seq = ros_msg.header.seq;
+
   if (save_replayed_topics_to_rosbag_)
   {
-  outputBag.write("/gt_box/hesai/points", latestCloudStamp_, ros_msg);
+    std::lock_guard<std::mutex> lock(rosbagMutex_);
+    outputBag.write("/gt_box/hesai/points", latestCloudStamp_, ros_msg);
+    outputBag.write("/gt_box/hesai/points_last", lastPointStamp_, ros_msg_last);
+  }
+
+  ros::Time now = ros::Time::now();
+  // ROS_WARN_STREAM("Time diff left: " << bagEndTime_.toNSec() - latestCloudStamp_.toNSec());
+  // ROS_WARN_STREAM("Time diff left: " << bagEndTime_.toNSec() - now.toNSec());
+
+  uint64_t m_time = latestCloudStamp_.toNSec();
+  float progress = (float)(m_time - bagStartTime_.toNSec()) / (float)duration_ * 100;
+  ROS_INFO("Processing PC message ( %.2f%% )", progress);
+
+  if ((bagEndTime_.toNSec() != 0) && (bagEndTime_.toNSec() - now.toNSec()) < (100 * 1000 * 1000))
+  {
+    std::cout << "Setting the exit flag" << std::endl;
+    exitting_ = true;
+    // this->SourceDriver::~SourceDriver();
+    // sleep this thread
+    // ROS_WARN_STREAM("Reached the end of the rosbag. Exiting in 2 seconds...");
+    // std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    // std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // ros::shutdown();
+    // exit(EXIT_SUCCESS);
+
+    // std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // raise(SIGINT);
+    // std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // raise(SIGABRT);
+    // std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // exit(EXIT_SUCCESS);
   }
 
   return ros_msg;
@@ -365,6 +474,7 @@ inline hesai_ros_driver::LossPacket SourceDriver::ToRosMsg(const uint32_t& total
   msg.total_packet_loss_count = total_packet_loss_count;  
   if (save_replayed_topics_to_rosbag_)
   {
+    std::lock_guard<std::mutex> lock(rosbagMutex_);
     outputBag.write("/gt_box/hesai/packet_loss", latestCloudStamp_, msg);
   }
   return msg;
@@ -377,6 +487,7 @@ inline hesai_ros_driver::Ptp SourceDriver::ToRosMsg(const uint8_t& ptp_lock_offs
   std::copy(ptp_status.begin(), ptp_status.begin() + std::min(16ul, ptp_status.size()), msg.ptp_status.begin());
   if (save_replayed_topics_to_rosbag_)
   {
+    std::lock_guard<std::mutex> lock(rosbagMutex_);
     outputBag.write("/gt_box/hesai/ptp", latestCloudStamp_, msg);
   }
   return msg;
@@ -391,6 +502,11 @@ inline hesai_ros_driver::Firetime SourceDriver::ToRosMsg(const double *firetime_
 
 inline void SourceDriver::RecievePacket(const hesai_ros_driver::UdpFrame& msg)
 {
+  {
+    std::lock_guard<std::mutex> lock(receive_packet_mutex_);
+    sequenceNumberPacket_ = msg.header.seq;
+  }
+
   for (size_t i = 0; i < msg.packets.size(); i++) {
     driver_ptr_->lidar_ptr_->origin_packets_buffer_.emplace_back(&msg.packets[i].data[0], msg.packets[i].size);
   }

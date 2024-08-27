@@ -44,21 +44,21 @@ std::mutex g_mtx;
 std::condition_variable g_cv;
 #endif
 
-static void sigHandler(int sig)
-{
-#ifdef ROS_FOUND
-  ros::shutdown();
-#elif ROS2_FOUND
-  g_cv.notify_all();
-#endif
-}
+// static void sigHandler(int sig)
+// {
+// #ifdef ROS_FOUND
+//   ros::shutdown();
+// #elif ROS2_FOUND
+//   g_cv.notify_all();
+// #endif
+// }
 
 int main(int argc, char** argv)
 {
   std::cout << "-------- Hesai Lidar ROS V" << VERSION_MAJOR << "." << VERSION_MINOR << "." << VERSION_TINY << " --------" << std::endl;
-  signal(SIGINT, sigHandler);  ///< bind ctrl+c signal with the sigHandler function
+  // signal(SIGINT, sigHandler);  ///< bind ctrl+c signal with the sigHandler function
 #ifdef ROS_FOUND
-  ros::init(argc, argv, "hesai_ros_driver_node", ros::init_options::NoSigintHandler);
+  ros::init(argc, argv, "hesai_ros_driver_node");
 #elif ROS2_FOUND
   rclcpp::init(argc, argv);
 #endif
