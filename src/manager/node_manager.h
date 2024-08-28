@@ -48,6 +48,7 @@ public:
   // Stop working
   void Stop();
   bool IsPlayEnded();
+  void SetRosbagReplayPath(const std::string& path);
   ~NodeManager();
   NodeManager() = default;
   std::vector<SourceDriver::Ptr> GetSourcesDriver();

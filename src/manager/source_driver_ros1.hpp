@@ -30,7 +30,10 @@
 
 #pragma once
 #include <ros/ros.h>
+#include <csignal>
+#include <filesystem>
 #include <rosbag/bag.h>
+#include <rosbag/view.h>
 #include "std_msgs/UInt8MultiArray.h"
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include "hesai_ros_driver/UdpFrame.h"
@@ -58,13 +61,23 @@ public:
     spinner.spin();
   }
   rosbag::Bag outputBag;
+  mutable std::mutex rosbagMutex_;
+  ros::Time bagStartTime_;
+  ros::Time bagEndTime_;
+  uint64_t duration_ = 0;
+  std::string input_rosbag_path_ = std::string();
+  std::mutex receive_packet_mutex_;
+  uint64_t sequenceNumberPacket_ = 0;
+  std::string outBagPath_ ="";
+  uint64_t totalNumberOfPackets_ = 0;
+  ros::Time lastPossibleMsgTime_;
+
+
   ros::Time latestCloudStamp_;
   bool save_replayed_topics_to_rosbag_ = false;
-  #ifdef __CUDACC__
-    std::shared_ptr<HesaiLidarSdkGpu<LidarPointXYZIRT>> driver_ptr_;
-  #else
-    std::shared_ptr<HesaiLidarSdk<LidarPointXYZIRT>> driver_ptr_;
-  #endif
+
+  std::shared_ptr<HesaiLidarSdk<LidarPointXYZIRT>> driver_ptr_;
+
 protected:
   // Save Correction file subscribed by "ros_recv_correction_topic"
   void RecieveCorrection(const std_msgs::UInt8MultiArray& msg);
@@ -163,13 +176,10 @@ inline void SourceDriver::Init(const YAML::Node& config)
     driver_param.decoder_param.enable_udp_thread = false;
     subscription_spin_thread_ = new boost::thread(boost::bind(&SourceDriver::SpinRos1,this));
   }
-  #ifdef __CUDACC__
-    driver_ptr_.reset(new HesaiLidarSdkGpu<LidarPointXYZIRT>());
-    driver_param.decoder_param.enable_parser_thread = false;
-  #else
-    driver_ptr_.reset(new HesaiLidarSdk<LidarPointXYZIRT>());
-    driver_param.decoder_param.enable_parser_thread = true;
-  #endif
+
+  driver_ptr_.reset(new HesaiLidarSdk<LidarPointXYZIRT>());
+  driver_param.decoder_param.enable_parser_thread = true;
+
   driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPointCloud, this, std::placeholders::_1));
   if(driver_param.input_param.send_packet_ros && driver_param.input_param.source_type != DATA_FROM_ROS_PACKET){
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacket, this, std::placeholders::_1, std::placeholders::_2)) ;
@@ -192,18 +202,24 @@ inline void SourceDriver::Init(const YAML::Node& config)
   }
   // We use sim time true so should be okay.
   latestCloudStamp_ = ros::Time::now();
+  lastPossibleMsgTime_ = ros::Time(0);
   // print ros time now
   std::cout << "ros time now:" << latestCloudStamp_ << std::endl;
 
-  if (save_replayed_topics_to_rosbag_)
-  {
-    std::string outBagPath_ ="";
+  if (save_replayed_topics_to_rosbag_){
+
+    ROS_INFO_STREAM("\033[92m"
+                << " In the replay mode. Sleeping for a second to allow the rosbag to start playing."
+                << "\033[0m");
+    const ros::WallTime first{ros::WallTime::now() + ros::WallDuration(0.5)};
+    ros::WallTime::sleepUntil(first);
+ 
     // Get the directory of the ros package
     // std::string packagePath = ros::package::getPath("hesai_ros_driver");
       
     // Generate the log file name
     std::string outBagDirectory_ = ros::package::getPath("hesai_ros_driver") + "/data/";
-    std::string outBagName_ = "hesaiXT32_" + std::to_string(ros::Time::now().toSec()) + ".bag";
+    std::string outBagName_ = "hesaiXT32_" + std::to_string(ros::Time::now().toNSec()) + ".bag";
 
     if (driver_param.input_param.output_rosbag_directory != "") {
       outBagPath_ = driver_param.input_param.output_rosbag_directory + outBagName_;
@@ -211,8 +227,13 @@ inline void SourceDriver::Init(const YAML::Node& config)
       outBagPath_ = outBagDirectory_ + outBagName_;
     }
 
+    std::cout << "outBagPath_: " << outBagPath_ << std::endl;
+
     // Remove the old bag file
-    std::remove(outBagPath_.c_str());
+    if (std::filesystem::exists(outBagPath_.c_str()))
+    {
+      std::remove(outBagPath_.c_str());
+    }
 
     // Open the new bag file
     outputBag.open(outBagPath_, rosbag::bagmode::Write); 
@@ -223,6 +244,89 @@ inline void SourceDriver::Init(const YAML::Node& config)
 inline void SourceDriver::Start()
 {
   driver_ptr_->Start();
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  input_rosbag_path_ = driver_ptr_->inputRosbagPath_;
+  if (input_rosbag_path_ != ""){
+    
+    ROS_WARN_STREAM("driver_ptr_->inputRosbagPath_: " << driver_ptr_->inputRosbagPath_);
+
+    ROS_WARN_STREAM("Input rosbag path: " << input_rosbag_path_);
+
+    // We need to do a dry-run on the rosbag to get the end time of the rosbag.
+    rosbag::Bag inputBag;
+    inputBag.open(input_rosbag_path_, rosbag::bagmode::Read);
+    std::vector<std::string> viewtopics;
+    viewtopics.push_back("/gt_box/hesai/packets");
+
+    {
+
+    rosbag::View view(inputBag, rosbag::TopicQuery(viewtopics));
+    ros::Duration rosbag_duration = view.getEndTime() - view.getBeginTime();
+
+    // ros::Time custom_start =
+    //   rosbag::View(bag).getBeginTime() + ros::Duration(view.getBeginTime());
+    // ros::Time custom_t_end =
+    //   duration >= 0 ? custom_start + ros::Duration(duration) : ros::TIME_MAX;
+
+    // // customView.addQuery(customView.getConnections(), rosbag::TopicQuery::Options());
+    // // customView.setQueryOptions(rosbag::TopicQuery::Options(rosbag::TopicQuery::REVERSE));
+    // auto lastMessageIter = view.end();
+    // ros::Time lastMsgTime = lastMessageIter->getTime();
+    // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toSec() << " s");
+
+    // for (rosbag::View::iterator it = view.end(); it != view.begin(); --it) {
+    // rosbag::View::iterator it2 = view.end();
+    // ros::Time lastMsgTime = it2->getTime();
+    // ROS_WARN_STREAM("lastMsgTime: " << lastMsgTime.toSec() << " s");
+
+      // if (fp != NULL) {
+      //   dataset->push_back(*fp);
+      // }
+    // }
+
+
+    totalNumberOfPackets_ = view.size();
+
+    ROS_WARN_STREAM("ROS bag begin time: " << view.getBeginTime().toSec() << " ROS bag end time: "
+                                        << view.getEndTime().toSec() << " s " << "Duration: " << rosbag_duration.toSec() << " s");
+
+
+    bagStartTime_ = view.getBeginTime();
+    bagEndTime_ = view.getEndTime();
+    duration_ = bagEndTime_.toNSec() - bagStartTime_.toNSec();
+
+
+
+
+
+    auto it = view.begin();
+    rosbag::View::iterator last_item;
+    while (it != view.end())
+    {
+        last_item = it++;
+    }
+
+    {
+      // rosbag::View customView(inputBag, rosbag::TopicQuery(viewtopics));
+      // rosbag::View::iterator it2 = customView.end();
+      lastPossibleMsgTime_ = last_item->getTime();
+      // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toNSec() << " s");
+
+    }
+
+
+
+  }
+
+
+
+  }else{
+    ROS_ERROR_STREAM("Input rosbag path is empty. Exiting...");
+    raise(SIGINT);
+  }
+
 }
 
 inline SourceDriver::~SourceDriver()
@@ -233,7 +337,34 @@ inline SourceDriver::~SourceDriver()
 
 inline void SourceDriver::Stop()
 {
-  outputBag.close();
+  std::string newName = input_rosbag_path_;
+  {
+    std::lock_guard<std::mutex> lock(rosbagMutex_);
+
+    if (outputBag.isOpen())
+    {
+      outputBag.close();
+      std::cout << "Rosbag Closed." << std::endl;
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(rosbagMutex_);
+    std::filesystem::path oldPath = std::filesystem::absolute(outBagPath_);
+
+    if ( std::filesystem::exists( oldPath ) ){
+      // Remove the `.bag` extension and add the new extension
+      newName.erase(newName.end() - 4, newName.end());
+      newName = newName + "_post_processed.bag";
+      
+      std::filesystem::path newPath = std::filesystem::absolute(newName);
+      std::cout << "New Rosbag Path: " << newName << std::endl;
+      std::cout << "Originally Recorded Path: " << outBagPath_ << std::endl;
+      std::filesystem::rename(oldPath, newPath);
+    }
+  }
+
+
   driver_ptr_->Stop();
 }
 
@@ -245,6 +376,12 @@ inline void SourceDriver::SendPacket(const UdpFrame_t& msg, double timestamp)
 inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg)
 {
   pub_.publish(ToRosMsg(msg, frame_id_));
+
+  if (driver_ptr_->lidar_ptr_->rosbagEnded_ == true)
+  {
+    raise(SIGINT);
+  }
+  
 }
 
 inline void SourceDriver::SendCorrection(const u8Array_t& msg)
@@ -327,11 +464,47 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
   // ros_msg.header.seq = s;
 
   latestCloudStamp_ = ros::Time().fromSec(frame.points[0].timestamp);
+  ros::Time lastPointStamp_ = ros::Time().fromSec(frame.points[frame.points_num - 1].timestamp);
+    
+
   ros_msg.header.stamp = latestCloudStamp_;
   ros_msg.header.frame_id = frame_id_;
+
+
+  sensor_msgs::PointCloud2 ros_msg_last = ros_msg;
+  ros_msg_last.header.stamp = lastPointStamp_;
+  // ros::Duration duration = lastPointStamp_ - latestCloudStamp_;
+  // ROS_INFO_STREAM("Duration: " << duration.toSec());
+
+  {
+    std::lock_guard<std::mutex> lock(receive_packet_mutex_);
+    ros_msg.header.seq = sequenceNumberPacket_;
+  }
+  ros_msg_last.header.seq = ros_msg.header.seq;
+
   if (save_replayed_topics_to_rosbag_)
   {
-  outputBag.write("/gt_box/hesai/points", latestCloudStamp_, ros_msg);
+
+    {
+      std::lock_guard<std::mutex> lock(rosbagMutex_);
+      outputBag.write("/gt_box/hesai/points", latestCloudStamp_, ros_msg);
+      outputBag.write("/gt_box/hesai/points_last", lastPointStamp_, ros_msg_last);
+    }
+
+    ros::Time now = ros::Time::now();
+    // ROS_WARN_STREAM("Time diff left: " << lastPossibleMsgTime_.toNSec() - latestCloudStamp_.toNSec());
+    // ROS_WARN_STREAM("Time diff NOW: " << lastPossibleMsgTime_.toNSec() - now.toNSec());
+
+    uint64_t m_time = latestCloudStamp_.toNSec();
+    float progress = (float)(m_time - bagStartTime_.toNSec()) / (float)duration_ * 100;
+    ROS_INFO("Processing PC message ( %.2f%% )", progress);
+    ROS_INFO_STREAM("Packet Ration: " << frame.frame_index << "/" << totalNumberOfPackets_);
+
+    if ((bagEndTime_.toNSec() != 0) && (lastPossibleMsgTime_.toNSec() - now.toNSec()) < (50 * 1000 * 1000))
+    {
+      std::cout << "Rosbag has been completed. " << std::endl;
+      driver_ptr_->lidar_ptr_->rosbagEnded_ = true;
+    }
   }
 
   return ros_msg;
@@ -365,7 +538,10 @@ inline hesai_ros_driver::LossPacket SourceDriver::ToRosMsg(const uint32_t& total
   msg.total_packet_loss_count = total_packet_loss_count;  
   if (save_replayed_topics_to_rosbag_)
   {
-    outputBag.write("/gt_box/hesai/packet_loss", latestCloudStamp_, msg);
+    {
+      std::lock_guard<std::mutex> lock(rosbagMutex_);
+      outputBag.write("/gt_box/hesai/packet_loss", latestCloudStamp_, msg);
+    }
   }
   return msg;
 }
@@ -377,7 +553,10 @@ inline hesai_ros_driver::Ptp SourceDriver::ToRosMsg(const uint8_t& ptp_lock_offs
   std::copy(ptp_status.begin(), ptp_status.begin() + std::min(16ul, ptp_status.size()), msg.ptp_status.begin());
   if (save_replayed_topics_to_rosbag_)
   {
-    outputBag.write("/gt_box/hesai/ptp", latestCloudStamp_, msg);
+    {
+      std::lock_guard<std::mutex> lock(rosbagMutex_);
+      outputBag.write("/gt_box/hesai/ptp", latestCloudStamp_, msg);
+    }
   }
   return msg;
 }
@@ -391,6 +570,12 @@ inline hesai_ros_driver::Firetime SourceDriver::ToRosMsg(const double *firetime_
 
 inline void SourceDriver::RecievePacket(const hesai_ros_driver::UdpFrame& msg)
 {
+
+  {
+    std::lock_guard<std::mutex> lock(receive_packet_mutex_);
+    sequenceNumberPacket_ = msg.header.seq;
+  }
+
   for (size_t i = 0; i < msg.packets.size(); i++) {
     driver_ptr_->lidar_ptr_->origin_packets_buffer_.emplace_back(&msg.packets[i].data[0], msg.packets[i].size);
   }
