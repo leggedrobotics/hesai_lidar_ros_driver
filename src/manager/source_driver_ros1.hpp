@@ -379,6 +379,11 @@ inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIR
 
   if (driver_ptr_->lidar_ptr_->rosbagEnded_ == true)
   {
+
+    ROS_INFO_STREAM("\033[92m"
+                  << " SUCCESSFULLY COMPLETED REPLAYING. TERMINATING MYSELF. "
+                  << "\033[0m");
+
     raise(SIGINT);
   }
   
@@ -498,8 +503,9 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
     uint64_t m_time = latestCloudStamp_.toNSec();
     float progress = (float)(m_time - bagStartTime_.toNSec()) / (float)duration_ * 100;
     ROS_INFO("Processing PC message ( %.2f%% )", progress);
-    ROS_INFO_STREAM("Packet Ration: " << frame.frame_index << "/" << totalNumberOfPackets_);
+    ROS_INFO_STREAM("Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
 
+    // TODO: MAGIC NUMBER 50ms
     if ((bagEndTime_.toNSec() != 0) && (lastPossibleMsgTime_.toNSec() - now.toNSec()) < (50 * 1000 * 1000))
     {
       std::cout << "Rosbag has been completed. " << std::endl;
