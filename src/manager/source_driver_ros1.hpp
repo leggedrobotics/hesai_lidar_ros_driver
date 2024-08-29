@@ -64,6 +64,8 @@ public:
   mutable std::mutex rosbagMutex_;
   ros::Time bagStartTime_;
   ros::Time bagEndTime_;
+  ros::Time lastReceivedPacketRosTime_;
+  // ros::Time lastlastReceivedPacketRosTime_;
   uint64_t duration_ = 0;
   std::string input_rosbag_path_ = std::string();
   std::mutex receive_packet_mutex_;
@@ -203,6 +205,8 @@ inline void SourceDriver::Init(const YAML::Node& config)
   // We use sim time true so should be okay.
   latestCloudStamp_ = ros::Time::now();
   lastPossibleMsgTime_ = ros::Time(0);
+  // lastReceivedPacketRosTime_ = ros::Time(0);
+  // lastlastReceivedPacketRosTime_ = ros::Time(0);
   // print ros time now
   std::cout << "ros time now:" << latestCloudStamp_ << std::endl;
 
@@ -237,6 +241,12 @@ inline void SourceDriver::Init(const YAML::Node& config)
 
     // Open the new bag file
     outputBag.open(outBagPath_, rosbag::bagmode::Write); 
+    std::filesystem::permissions(
+        outBagPath_,
+        std::filesystem::perms::owner_all | std::filesystem::perms::group_all,
+        std::filesystem::perm_options::add
+    );
+
   }
 
 }
@@ -302,16 +312,28 @@ inline void SourceDriver::Start()
 
 
     auto it = view.begin();
+    // size_t dec_pointer  = view.size()-1;
+    // auto last_it = view.crbegin();
     rosbag::View::iterator last_item;
+    rosbag::View::iterator lastlast_item;
     while (it != view.end())
     {
         last_item = it++;
+
+        if (it == view.end())
+        {
+          break;
+        }else{
+          lastlast_item = last_item;
+        }
     }
 
     {
+      // last_item = --it;
       // rosbag::View customView(inputBag, rosbag::TopicQuery(viewtopics));
       // rosbag::View::iterator it2 = customView.end();
-      lastPossibleMsgTime_ = last_item->getTime();
+      lastPossibleMsgTime_ = lastlast_item->getTime();
+      // lastlast_item = (last_item+(dec_pointer--))
       // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toNSec() << " s");
 
     }
@@ -360,10 +382,26 @@ inline void SourceDriver::Stop()
       std::filesystem::path newPath = std::filesystem::absolute(newName);
       std::cout << "New Rosbag Path: " << newName << std::endl;
       std::cout << "Originally Recorded Path: " << outBagPath_ << std::endl;
-      std::filesystem::rename(oldPath, newPath);
+      // std::filesystem::rename(oldPath, newPath);
+
+      try {
+        std::filesystem::rename(oldPath, newPath);
+      } catch (std::filesystem::filesystem_error& e) {
+        std::cout << e.what() << '\n';
+
+        std::cout << "Can't move the file and rename. Instead will copy." << '\n';
+
+        if (std::filesystem::exists( newPath ))
+        {
+          std::filesystem::remove(newPath);
+        }
+
+        std::filesystem::copy(oldPath,newPath);
+        std::filesystem::remove(oldPath);
+      }
+
     }
   }
-
 
   driver_ptr_->Stop();
 }
@@ -465,8 +503,7 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
     ++iter_ring_;
     ++iter_timestamp_;   
   }
-  printf("frame:%d points:%u packet:%d start time:%lf end time:%lf\n",frame.frame_index, frame.points_num, frame.packet_num, frame.points[0].timestamp, frame.points[frame.points_num - 1].timestamp) ;
-  // ros_msg.header.seq = s;
+    // ros_msg.header.seq = s;
 
   latestCloudStamp_ = ros::Time().fromSec(frame.points[0].timestamp);
   ros::Time lastPointStamp_ = ros::Time().fromSec(frame.points[frame.points_num - 1].timestamp);
@@ -500,17 +537,38 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
     // ROS_WARN_STREAM("Time diff left: " << lastPossibleMsgTime_.toNSec() - latestCloudStamp_.toNSec());
     // ROS_WARN_STREAM("Time diff NOW: " << lastPossibleMsgTime_.toNSec() - now.toNSec());
 
-    uint64_t m_time = latestCloudStamp_.toNSec();
-    float progress = (float)(m_time - bagStartTime_.toNSec()) / (float)duration_ * 100;
-    ROS_INFO("Processing PC message ( %.2f%% )", progress);
-    ROS_INFO_STREAM("Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
+    if (frame.frame_index % 50 == 0)
+    {
+      printf("frame:%d points:%u packet:%d start time:%lf end time:%lf\n",frame.frame_index, frame.points_num, frame.packet_num, frame.points[0].timestamp, frame.points[frame.points_num - 1].timestamp) ;
 
-    // TODO: MAGIC NUMBER 50ms
-    if ((bagEndTime_.toNSec() != 0) && (lastPossibleMsgTime_.toNSec() - now.toNSec()) < (50 * 1000 * 1000))
+      uint64_t m_time = latestCloudStamp_.toNSec();
+      float progress = (float)(m_time - bagStartTime_.toNSec()) / (float)duration_ * 100;
+      ROS_INFO("Processing PC message ( %.2f%% )", progress);
+      ROS_INFO_STREAM("Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
+    }
+
+    // ROS_INFO_STREAM("lastReceivedPacketRosTime_: " << lastReceivedPacketRosTime_);
+    // ROS_INFO_STREAM("lastPossibleMsgTime_: " << lastPossibleMsgTime_);
+    // ROS_INFO_STREAM("DIFF: " << (lastPossibleMsgTime_ - lastReceivedPacketRosTime_).toNSec());
+    ros::Duration difff = lastPossibleMsgTime_ - lastReceivedPacketRosTime_;
+    // ROS_INFO_STREAM("DIFF: " << difff.toNSec());
+    if ((difff.toNSec()) < ( 10 * 1000 * 1000) && lastPossibleMsgTime_ != ros::Time(0))
     {
       std::cout << "Rosbag has been completed. " << std::endl;
+      ROS_INFO_STREAM("lastReceivedPacketRosTime_: " << lastReceivedPacketRosTime_ << " AND " << "lastPossibleMsgTime_: " << lastPossibleMsgTime_);
+      ROS_INFO_STREAM("Final Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
       driver_ptr_->lidar_ptr_->rosbagEnded_ = true;
     }
+    
+    // // TODO: MAGIC NUMBER 50ms
+    // if ((bagEndTime_.toNSec() != 0) && (lastPossibleMsgTime_.toNSec() - now.toNSec()) < ( 50 * 1000 * 1000))
+    // {
+    //   std::cout << "Rosbag has been completed. " << std::endl;
+    //   ROS_INFO_STREAM("Final Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
+    //   driver_ptr_->lidar_ptr_->rosbagEnded_ = true;
+    // }
+
+    // lastlastReceivedPacketRosTime_ = lastReceivedPacketRosTime_;
   }
 
   return ros_msg;
@@ -580,10 +638,11 @@ inline void SourceDriver::RecievePacket(const hesai_ros_driver::UdpFrame& msg)
   {
     std::lock_guard<std::mutex> lock(receive_packet_mutex_);
     sequenceNumberPacket_ = msg.header.seq;
-  }
+    lastReceivedPacketRosTime_ = msg.header.stamp;
 
-  for (size_t i = 0; i < msg.packets.size(); i++) {
-    driver_ptr_->lidar_ptr_->origin_packets_buffer_.emplace_back(&msg.packets[i].data[0], msg.packets[i].size);
+    for (size_t i = 0; i < msg.packets.size(); i++) {
+      driver_ptr_->lidar_ptr_->origin_packets_buffer_.emplace_back(&msg.packets[i].data[0], msg.packets[i].size);
+    }
   }
 
   // printf("Receiving Buffer Size:%lu\n",driver_ptr_->lidar_ptr_->origin_packets_buffer_.size());
