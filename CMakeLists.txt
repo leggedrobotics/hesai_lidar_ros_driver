@@ -191,7 +191,7 @@ link_directories(${Boost_LIBRARY_DIRS})
 # else(CUDA_FOUND)
 
   message(=============================================================)
-  message("-- CUDA Not Found. CUDA Support is turned Off.")
+  message("-- CUDA support disabled by GrandTour team.")
   message(=============================================================)
   add_executable(hesai_ros_driver_node
                 node/hesai_ros_driver_node.cc
