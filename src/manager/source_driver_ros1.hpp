@@ -241,6 +241,7 @@ inline void SourceDriver::Init(const YAML::Node& config)
 
     // Open the new bag file
     outputBag.open(outBagPath_, rosbag::bagmode::Write); 
+    outputBag.setCompression(rosbag::compression::LZ4);
     std::filesystem::permissions(
         outBagPath_,
         std::filesystem::perms::owner_all | std::filesystem::perms::group_all,
