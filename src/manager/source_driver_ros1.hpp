@@ -85,12 +85,11 @@ protected:
   void RecieveCorrection(const std_msgs::UInt8MultiArray& msg);
   // Save packets subscribed by 'ros_recv_packet_topic'
   void RecievePacket(const hesai_ros_driver::UdpFrame& msg);
+  void RecievePTP(const hesai_ros_driver::Ptp& msg);
   // Used to publish point clouds through 'ros_send_point_cloud_topic'
   void SendPointCloud(const LidarDecodedFrame<LidarPointXYZIRT>& msg);
   // Used to publish the original pcake through 'ros_send_packet_topic'
   void SendPacket(const UdpFrame_t&  ros_msg, double);
-  // Build the log file name
-  std::string buildUpLogFilename(const std::string& typeSuffix, const std::string& extension = ".txt");
   // Used to publish the Correction file through 'ros_send_correction_topic'
   void SendCorrection(const u8Array_t& msg);
   // Used to publish the Packet loss condition
@@ -119,6 +118,7 @@ protected:
   ros::Publisher pkt_pub_;
   // packet sub
   ros::Subscriber pkt_sub_;
+  ros::Subscriber ptp_sub_;
   //spin thread while recieve data from ROS topic
   boost::thread* subscription_spin_thread_;
 
@@ -170,6 +170,12 @@ inline void SourceDriver::Init(const YAML::Node& config)
 
   if (driver_param.input_param.source_type == DATA_FROM_ROS_PACKET) {
     pkt_sub_ = nh_->subscribe(driver_param.input_param.ros_recv_packet_topic, 10000, &SourceDriver::RecievePacket, this);
+
+    if (save_replayed_topics_to_rosbag_)
+    {
+      ptp_sub_ = nh_->subscribe(driver_param.input_param.ros_send_ptp_topic, 10000, &SourceDriver::RecievePTP, this);
+    }
+    
 
     if (driver_param.input_param.ros_recv_correction_topic != NULL_TOPIC) {
       crt_sub_ = nh_->subscribe(driver_param.input_param.ros_recv_correction_topic, 10, &SourceDriver::RecieveCorrection, this);
@@ -616,13 +622,6 @@ inline hesai_ros_driver::Ptp SourceDriver::ToRosMsg(const uint8_t& ptp_lock_offs
   hesai_ros_driver::Ptp msg;
   msg.ptp_lock_offset = ptp_lock_offset;
   std::copy(ptp_status.begin(), ptp_status.begin() + std::min(16ul, ptp_status.size()), msg.ptp_status.begin());
-  if (save_replayed_topics_to_rosbag_)
-  {
-    {
-      std::lock_guard<std::mutex> lock(rosbagMutex_);
-      outputBag.write("/gt_box/hesai/ptp", latestCloudStamp_, msg);
-    }
-  }
   return msg;
 }
 
@@ -631,6 +630,25 @@ inline hesai_ros_driver::Firetime SourceDriver::ToRosMsg(const double *firetime_
   hesai_ros_driver::Firetime msg;
   std::copy(firetime_correction_, firetime_correction_ + 512, msg.data.begin());
   return msg;
+}
+
+inline void SourceDriver::RecievePTP(const hesai_ros_driver::Ptp& msg){
+
+  hesai_ros_driver::Ptp newMsg = msg;
+
+  if (save_replayed_topics_to_rosbag_)
+  {
+    
+    if (!outputBag.isOpen())
+    {
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(rosbagMutex_);
+      outputBag.write("/gt_box/hesai/ptp", latestCloudStamp_, newMsg);
+    }
+  }
 }
 
 inline void SourceDriver::RecievePacket(const hesai_ros_driver::UdpFrame& msg)
