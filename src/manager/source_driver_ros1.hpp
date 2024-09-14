@@ -265,10 +265,15 @@ inline void SourceDriver::Start()
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
   input_rosbag_path_ = driver_ptr_->inputRosbagPath_;
-  if (input_rosbag_path_ != ""){
+  if (!(save_replayed_topics_to_rosbag_))
+  {
+    ROS_WARN("[HesaiXT32] Replay mode is off.");
+   return;
+  }
+
+  if ( (input_rosbag_path_ != "") && (save_replayed_topics_to_rosbag_)){
     
     ROS_WARN_STREAM("driver_ptr_->inputRosbagPath_: " << driver_ptr_->inputRosbagPath_);
-
     ROS_WARN_STREAM("Input rosbag path: " << input_rosbag_path_);
 
     // We need to do a dry-run on the rosbag to get the end time of the rosbag.
@@ -278,78 +283,68 @@ inline void SourceDriver::Start()
     viewtopics.push_back("/gt_box/hesai/packets");
 
     {
+      rosbag::View view(inputBag, rosbag::TopicQuery(viewtopics));
+      ros::Duration rosbag_duration = view.getEndTime() - view.getBeginTime();
 
-    rosbag::View view(inputBag, rosbag::TopicQuery(viewtopics));
-    ros::Duration rosbag_duration = view.getEndTime() - view.getBeginTime();
+      // ros::Time custom_start =
+      //   rosbag::View(bag).getBeginTime() + ros::Duration(view.getBeginTime());
+      // ros::Time custom_t_end =
+      //   duration >= 0 ? custom_start + ros::Duration(duration) : ros::TIME_MAX;
 
-    // ros::Time custom_start =
-    //   rosbag::View(bag).getBeginTime() + ros::Duration(view.getBeginTime());
-    // ros::Time custom_t_end =
-    //   duration >= 0 ? custom_start + ros::Duration(duration) : ros::TIME_MAX;
+      // // customView.addQuery(customView.getConnections(), rosbag::TopicQuery::Options());
+      // // customView.setQueryOptions(rosbag::TopicQuery::Options(rosbag::TopicQuery::REVERSE));
+      // auto lastMessageIter = view.end();
+      // ros::Time lastMsgTime = lastMessageIter->getTime();
+      // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toSec() << " s");
 
-    // // customView.addQuery(customView.getConnections(), rosbag::TopicQuery::Options());
-    // // customView.setQueryOptions(rosbag::TopicQuery::Options(rosbag::TopicQuery::REVERSE));
-    // auto lastMessageIter = view.end();
-    // ros::Time lastMsgTime = lastMessageIter->getTime();
-    // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toSec() << " s");
+      // for (rosbag::View::iterator it = view.end(); it != view.begin(); --it) {
+      // rosbag::View::iterator it2 = view.end();
+      // ros::Time lastMsgTime = it2->getTime();
+      // ROS_WARN_STREAM("lastMsgTime: " << lastMsgTime.toSec() << " s");
 
-    // for (rosbag::View::iterator it = view.end(); it != view.begin(); --it) {
-    // rosbag::View::iterator it2 = view.end();
-    // ros::Time lastMsgTime = it2->getTime();
-    // ROS_WARN_STREAM("lastMsgTime: " << lastMsgTime.toSec() << " s");
-
-      // if (fp != NULL) {
-      //   dataset->push_back(*fp);
+        // if (fp != NULL) {
+        //   dataset->push_back(*fp);
+        // }
       // }
-    // }
+
+      totalNumberOfPackets_ = view.size();
+
+      ROS_WARN_STREAM("ROS bag begin time: " << view.getBeginTime().toSec() << " ROS bag end time: "
+                                          << view.getEndTime().toSec() << " s " << "Duration: " << rosbag_duration.toSec() << " s");
+
+      bagStartTime_ = view.getBeginTime();
+      bagEndTime_ = view.getEndTime();
+      duration_ = bagEndTime_.toNSec() - bagStartTime_.toNSec();
 
 
-    totalNumberOfPackets_ = view.size();
+      auto it = view.begin();
+      // size_t dec_pointer  = view.size()-1;
+      // auto last_it = view.crbegin();
+      rosbag::View::iterator last_item;
+      rosbag::View::iterator lastlast_item;
+      while (it != view.end())
+      {
+          last_item = it++;
 
-    ROS_WARN_STREAM("ROS bag begin time: " << view.getBeginTime().toSec() << " ROS bag end time: "
-                                        << view.getEndTime().toSec() << " s " << "Duration: " << rosbag_duration.toSec() << " s");
+          if (it == view.end())
+          {
+            break;
+          }else{
+            lastlast_item = last_item;
+          }
+      }
 
+      {
+        // last_item = --it;
+        // rosbag::View customView(inputBag, rosbag::TopicQuery(viewtopics));
+        // rosbag::View::iterator it2 = customView.end();
+        lastPossibleMsgTime_ = lastlast_item->getTime();
+        // lastlast_item = (last_item+(dec_pointer--))
+        // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toNSec() << " s");
 
-    bagStartTime_ = view.getBeginTime();
-    bagEndTime_ = view.getEndTime();
-    duration_ = bagEndTime_.toNSec() - bagStartTime_.toNSec();
-
-
-
-
-
-    auto it = view.begin();
-    // size_t dec_pointer  = view.size()-1;
-    // auto last_it = view.crbegin();
-    rosbag::View::iterator last_item;
-    rosbag::View::iterator lastlast_item;
-    while (it != view.end())
-    {
-        last_item = it++;
-
-        if (it == view.end())
-        {
-          break;
-        }else{
-          lastlast_item = last_item;
-        }
-    }
-
-    {
-      // last_item = --it;
-      // rosbag::View customView(inputBag, rosbag::TopicQuery(viewtopics));
-      // rosbag::View::iterator it2 = customView.end();
-      lastPossibleMsgTime_ = lastlast_item->getTime();
-      // lastlast_item = (last_item+(dec_pointer--))
-      // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toNSec() << " s");
+      }
 
     }
-
-
-
-  }
-
-
 
   }else{
     ROS_ERROR_STREAM("Input rosbag path is empty. Exiting...");
@@ -540,7 +535,7 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
       outputBag.write("/gt_box/hesai/points_last", lastPointStamp_, ros_msg_last);
     }
 
-    ros::Time now = ros::Time::now();
+    // ros::Time now = ros::Time::now();
     // ROS_WARN_STREAM("Time diff left: " << lastPossibleMsgTime_.toNSec() - latestCloudStamp_.toNSec());
     // ROS_WARN_STREAM("Time diff NOW: " << lastPossibleMsgTime_.toNSec() - now.toNSec());
 
