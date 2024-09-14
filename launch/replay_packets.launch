@@ -1,7 +1,7 @@
 <launch>
 
   
-  <arg name="input_rosbag_path" default="/home/tutuna/box_ws/src/grand_tour_box/box_drivers/novatel_oem7_driver/src/novatel_oem7_driver/data/2024-08-14-10-45-39_nuc_hesai_1.bag"/>
+  <arg name="input_rosbag_path" default=""/>
   
   <param name="/use_sim_time" value="true"/>
   <arg name="node_start_delay" default="2.0" />
