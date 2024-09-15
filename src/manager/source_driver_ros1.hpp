@@ -273,7 +273,7 @@ inline void SourceDriver::Start()
 
   if ( (input_rosbag_path_ != "") && (save_replayed_topics_to_rosbag_)){
     
-    ROS_WARN_STREAM("driver_ptr_->inputRosbagPath_: " << driver_ptr_->inputRosbagPath_);
+    // ROS_WARN_STREAM("driver_ptr_->inputRosbagPath_: " << driver_ptr_->inputRosbagPath_);
     ROS_WARN_STREAM("Input rosbag path: " << input_rosbag_path_);
 
     // We need to do a dry-run on the rosbag to get the end time of the rosbag.
@@ -284,38 +284,18 @@ inline void SourceDriver::Start()
 
     {
       rosbag::View view(inputBag, rosbag::TopicQuery(viewtopics));
-      ros::Duration rosbag_duration = view.getEndTime() - view.getBeginTime();
-
-      // ros::Time custom_start =
-      //   rosbag::View(bag).getBeginTime() + ros::Duration(view.getBeginTime());
-      // ros::Time custom_t_end =
-      //   duration >= 0 ? custom_start + ros::Duration(duration) : ros::TIME_MAX;
-
-      // // customView.addQuery(customView.getConnections(), rosbag::TopicQuery::Options());
-      // // customView.setQueryOptions(rosbag::TopicQuery::Options(rosbag::TopicQuery::REVERSE));
-      // auto lastMessageIter = view.end();
-      // ros::Time lastMsgTime = lastMessageIter->getTime();
-      // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toSec() << " s");
-
-      // for (rosbag::View::iterator it = view.end(); it != view.begin(); --it) {
-      // rosbag::View::iterator it2 = view.end();
-      // ros::Time lastMsgTime = it2->getTime();
-      // ROS_WARN_STREAM("lastMsgTime: " << lastMsgTime.toSec() << " s");
-
-        // if (fp != NULL) {
-        //   dataset->push_back(*fp);
-        // }
-      // }
-
-      totalNumberOfPackets_ = view.size();
-
-      ROS_WARN_STREAM("ROS bag begin time: " << view.getBeginTime().toSec() << " ROS bag end time: "
-                                          << view.getEndTime().toSec() << " s " << "Duration: " << rosbag_duration.toSec() << " s");
-
       bagStartTime_ = view.getBeginTime();
       bagEndTime_ = view.getEndTime();
-      duration_ = bagEndTime_.toNSec() - bagStartTime_.toNSec();
 
+      ROS_WARN_STREAM("Rosbag Start time: " <<bagStartTime_<< " s ");
+      ROS_WARN_STREAM("Rosbag End time: " <<bagEndTime_<< " s ");
+
+      ros::Duration rosbag_duration = bagEndTime_ - bagStartTime_;
+      duration_ = rosbag_duration.toNSec();
+
+      ROS_WARN_STREAM("Duration: " << duration_ << " s");
+
+      totalNumberOfPackets_ = view.size();
 
       auto it = view.begin();
       // size_t dec_pointer  = view.size()-1;
@@ -340,7 +320,7 @@ inline void SourceDriver::Start()
         // rosbag::View::iterator it2 = customView.end();
         lastPossibleMsgTime_ = lastlast_item->getTime();
         // lastlast_item = (last_item+(dec_pointer--))
-        // ROS_WARN_STREAM("Last Msg time in the bag is: " << lastMsgTime.toNSec() << " s");
+        ROS_WARN_STREAM("Last Msg time in the bag is: " << lastPossibleMsgTime_ << " s");
 
       }
 
@@ -421,7 +401,7 @@ inline void SourceDriver::SendPointCloud(const LidarDecodedFrame<LidarPointXYZIR
   {
 
     ROS_INFO_STREAM("\033[92m"
-                  << " SUCCESSFULLY COMPLETED REPLAYING. TERMINATING MYSELF. "
+                  << "SUCCESSFULLY COMPLETED REPLAYING. TERMINATING MYSELF. "
                   << "\033[0m");
 
     raise(SIGINT);
@@ -539,38 +519,46 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
     // ROS_WARN_STREAM("Time diff left: " << lastPossibleMsgTime_.toNSec() - latestCloudStamp_.toNSec());
     // ROS_WARN_STREAM("Time diff NOW: " << lastPossibleMsgTime_.toNSec() - now.toNSec());
 
-    if (frame.frame_index % 50 == 0)
+    if ((frame.frame_index % 50 == 0) && (frame.frame_index != 0))
     {
       printf("frame:%d points:%u packet:%d start time:%lf end time:%lf\n",frame.frame_index, frame.points_num, frame.packet_num, frame.points[0].timestamp, frame.points[frame.points_num - 1].timestamp) ;
 
       uint64_t m_time = latestCloudStamp_.toNSec();
-      float progress = (float)(m_time - bagStartTime_.toNSec()) / (float)duration_ * 100;
-      ROS_INFO("Processing PC message ( %.2f%% )", progress);
+      if ( (duration_ > 0) && (bagStartTime_.toNSec() > 0))
+      {
+        float progress = (float)(m_time - bagStartTime_.toNSec()) / (float)duration_ * 100;
+        ROS_INFO("Processing PC message ( %.2f%% )", progress);
+      }
+
       ROS_INFO_STREAM("Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
     }
 
     // ROS_INFO_STREAM("lastReceivedPacketRosTime_: " << lastReceivedPacketRosTime_);
     // ROS_INFO_STREAM("lastPossibleMsgTime_: " << lastPossibleMsgTime_);
     // ROS_INFO_STREAM("DIFF: " << (lastPossibleMsgTime_ - lastReceivedPacketRosTime_).toNSec());
-    ros::Duration difff = lastPossibleMsgTime_ - lastReceivedPacketRosTime_;
-    // ROS_INFO_STREAM("DIFF: " << difff.toNSec());
-    if ((difff.toNSec()) < ( 10 * 1000 * 1000) && lastPossibleMsgTime_ != ros::Time(0))
-    {
-      std::cout << "Rosbag has been completed. " << std::endl;
-      ROS_INFO_STREAM("lastReceivedPacketRosTime_: " << lastReceivedPacketRosTime_ << " AND " << "lastPossibleMsgTime_: " << lastPossibleMsgTime_);
-      ROS_INFO_STREAM("Final Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
-      driver_ptr_->lidar_ptr_->rosbagEnded_ = true;
-    }
-    
-    // // TODO: MAGIC NUMBER 50ms
-    // if ((bagEndTime_.toNSec() != 0) && (lastPossibleMsgTime_.toNSec() - now.toNSec()) < ( 50 * 1000 * 1000))
-    // {
-    //   std::cout << "Rosbag has been completed. " << std::endl;
-    //   ROS_INFO_STREAM("Final Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
-    //   driver_ptr_->lidar_ptr_->rosbagEnded_ = true;
-    // }
 
-    // lastlastReceivedPacketRosTime_ = lastReceivedPacketRosTime_;
+    if ( (duration_ > 0) && (frame.frame_index > 5 ) )
+    {
+      if (lastReceivedPacketRosTime_.toNSec() > lastPossibleMsgTime_.toNSec())
+      {
+         ROS_ERROR("The Hesai Computer time rolled back in time while recording. i.e. the header time of the packet is not within the bag. Exitting.");
+         raise(SIGINT);
+      }
+      
+      ros::Duration difff = lastPossibleMsgTime_ - lastReceivedPacketRosTime_;
+      // ROS_INFO_STREAM("DIFF: " << difff.toNSec());
+      if ((difff.toNSec()) < ( 10 * 1000 * 1000) && lastPossibleMsgTime_ != ros::Time(0))
+      {
+        ROS_INFO_STREAM("\033[92m" << "Rosbag replaying has been completed." << "\033[0m");
+        ROS_INFO_STREAM("Last Received Packet Timestamp: " << lastReceivedPacketRosTime_);
+        ROS_INFO_STREAM("Last Packet time from the bag : " << lastPossibleMsgTime_);
+        ROS_INFO_STREAM("Time Difference (Expect ~ 0s) : " << difff);
+
+        ROS_INFO_STREAM("\033[92m" << "Final Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_ << "\033[0m");
+
+        driver_ptr_->lidar_ptr_->rosbagEnded_ = true;
+      }
+    }
   }
 
   return ros_msg;
