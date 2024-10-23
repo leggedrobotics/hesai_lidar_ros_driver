@@ -77,6 +77,7 @@ public:
 
   ros::Time latestCloudStamp_;
   bool save_replayed_topics_to_rosbag_ = false;
+  bool save_additional_last_point_timestamp_cloud_ = false;
 
   std::shared_ptr<HesaiLidarSdk<LidarPointXYZIRT>> driver_ptr_;
 
@@ -140,6 +141,8 @@ inline void SourceDriver::Init(const YAML::Node& config)
   frame_id_ = driver_param.input_param.frame_id;
 
   save_replayed_topics_to_rosbag_ = driver_param.input_param.save_replayed_topics_to_rosbag;
+
+  save_additional_last_point_timestamp_cloud_ = driver_param.input_param.save_additional_last_point_timestamp_cloud;
 
   if (driver_param.input_param.send_point_cloud_ros) {
     pub_ = nh_->advertise<sensor_msgs::PointCloud2>(driver_param.input_param.ros_send_point_topic, 10);
@@ -512,12 +515,15 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
     {
       std::lock_guard<std::mutex> lock(rosbagMutex_);
       outputBag.write("/gt_box/hesai/points", latestCloudStamp_, ros_msg);
-      outputBag.write("/gt_box/hesai/points_last", lastPointStamp_, ros_msg_last);
     }
 
-    // ros::Time now = ros::Time::now();
-    // ROS_WARN_STREAM("Time diff left: " << lastPossibleMsgTime_.toNSec() - latestCloudStamp_.toNSec());
-    // ROS_WARN_STREAM("Time diff NOW: " << lastPossibleMsgTime_.toNSec() - now.toNSec());
+    if (save_additional_last_point_timestamp_cloud_)
+    {
+      {
+        std::lock_guard<std::mutex> lock(rosbagMutex_);
+        outputBag.write("/gt_box/hesai/points_last", lastPointStamp_, ros_msg_last);
+      }
+    }
 
     if ((frame.frame_index % 50 == 0) && (frame.frame_index != 0))
     {
