@@ -1,7 +1,7 @@
 <launch>
 
   
-  <arg name="input_rosbag_path" default=""/>
+  <arg name="input_rosbag_path" default="/home/tutuna/Music/box_debug/2024-11-15-10-16-35_nuc_hesai.bag"/>
   
   <param name="/use_sim_time" value="true"/>
   <arg name="node_start_delay" default="2.0" />

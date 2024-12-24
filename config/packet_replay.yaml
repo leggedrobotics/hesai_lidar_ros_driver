@@ -31,7 +31,7 @@ lidar:
       #fov config, [fov_start, fov_end] range [1, 359], [-1, -1]means use default
       fov_start: -1
       fov_end:  -1
-      enable_packet_loss_tool: true     # enable the udp packet loss detection tool
+      enable_packet_loss_tool: false     # enable the udp packet loss detection tool
     ros:
       ros_frame_id: hesai_lidar                     #Frame id of packet message and point cloud message
       save_replayed_topics_to_rosbag: true

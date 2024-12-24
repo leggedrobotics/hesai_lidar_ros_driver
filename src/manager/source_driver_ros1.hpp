@@ -287,45 +287,51 @@ inline void SourceDriver::Start()
 
     {
       rosbag::View view(inputBag, rosbag::TopicQuery(viewtopics));
-      bagStartTime_ = view.getBeginTime();
-      bagEndTime_ = view.getEndTime();
 
-      ROS_WARN_STREAM("Rosbag Start time: " <<bagStartTime_<< " s ");
-      ROS_WARN_STREAM("Rosbag End time: " <<bagEndTime_<< " s ");
-
-      ros::Duration rosbag_duration = bagEndTime_ - bagStartTime_;
-      duration_ = rosbag_duration.toNSec();
-
-      ROS_WARN_STREAM("Duration: " << duration_ << " s");
+      if (view.size() == 0) {
+        ROS_WARN_STREAM("No messages found on " << viewtopics.front());
+        return;
+      }
 
       totalNumberOfPackets_ = view.size();
 
+      auto first_it = view.begin();
+      if (first_it != view.end())
+      {
+        // Instantiate as your actual message type
+        hesai_ros_driver::UdpFrame::ConstPtr first_msg = first_it->instantiate<hesai_ros_driver::UdpFrame>();
+        if (first_msg) {
+          ROS_INFO_STREAM("First message header stamp = " << first_msg->header.stamp << " s");
+          bagStartTime_ = first_msg->header.stamp;
+        } else {
+          ROS_WARN_STREAM("Could not instantiate the first message.");
+        }
+      }
+
+      // -------------------------
+      // 2. Check the last message
+      // -------------------------
       auto it = view.begin();
-      // size_t dec_pointer  = view.size()-1;
-      // auto last_it = view.crbegin();
+
       rosbag::View::iterator last_item;
       rosbag::View::iterator lastlast_item;
       while (it != view.end())
       {
-          last_item = it++;
+        last_item = it++;
 
-          if (it == view.end())
-          {
-            break;
-          }else{
-            lastlast_item = last_item;
-          }
+        if (it == view.end())
+        {
+          break;
+        }
       }
+      hesai_ros_driver::UdpFrame::ConstPtr last_msg = last_item->instantiate<hesai_ros_driver::UdpFrame>();
+      ROS_INFO_STREAM("Last message header stamp  = " << last_msg->header.stamp << " s");
+      lastPossibleMsgTime_ = last_msg->header.stamp;
+      bagEndTime_ = last_msg->header.stamp;
 
-      {
-        // last_item = --it;
-        // rosbag::View customView(inputBag, rosbag::TopicQuery(viewtopics));
-        // rosbag::View::iterator it2 = customView.end();
-        lastPossibleMsgTime_ = lastlast_item->getTime();
-        // lastlast_item = (last_item+(dec_pointer--))
-        ROS_WARN_STREAM("Last Msg time in the bag is: " << lastPossibleMsgTime_ << " s");
-
-      }
+      ros::Duration rosbag_duration = bagEndTime_ - bagStartTime_;
+      duration_ = rosbag_duration.toNSec();
+      ROS_WARN_STREAM("Duration: " << rosbag_duration.toSec()  << " s");
 
     }
 
@@ -437,8 +443,8 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
   sensor_msgs::PointCloud2 ros_msg;
 
 
+  // Rarely, we have overflow issue due to reflected points or edge duplications. We truncate them.
   uint32_t frameSize = frame.points_num;
-
   if (save_replayed_topics_to_rosbag_)
   {
     if (frameSize > 64000)
@@ -493,15 +499,11 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
   latestCloudStamp_ = ros::Time().fromSec(frame.points[0].timestamp);
   ros::Time lastPointStamp_ = ros::Time().fromSec(frame.points[frame.points_num - 1].timestamp);
     
-
   ros_msg.header.stamp = latestCloudStamp_;
   ros_msg.header.frame_id = frame_id_;
 
-
   sensor_msgs::PointCloud2 ros_msg_last = ros_msg;
   ros_msg_last.header.stamp = lastPointStamp_;
-  // ros::Duration duration = lastPointStamp_ - latestCloudStamp_;
-  // ROS_INFO_STREAM("Duration: " << duration.toSec());
 
   {
     std::lock_guard<std::mutex> lock(receive_packet_mutex_);
@@ -525,7 +527,7 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
       }
     }
 
-    if ((frame.frame_index % 50 == 0) && (frame.frame_index != 0))
+    if ( ( (frame.frame_index % 50 == 0)  ||  (totalNumberOfPackets_ - frame.frame_index) < 11 ) && (frame.frame_index != 0))
     {
       printf("frame:%d points:%u packet:%d start time:%lf end time:%lf\n",frame.frame_index, frame.points_num, frame.packet_num, frame.points[0].timestamp, frame.points[frame.points_num - 1].timestamp) ;
 
@@ -536,18 +538,19 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
         ROS_INFO("Processing PC message ( %.2f%% )", progress);
       }
 
-      ROS_INFO_STREAM("Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_);
+      ROS_INFO_STREAM("Processed Message Ratio: " << frame.frame_index + 1 << "/" << totalNumberOfPackets_);
     }
 
     // ROS_INFO_STREAM("lastReceivedPacketRosTime_: " << lastReceivedPacketRosTime_);
     // ROS_INFO_STREAM("lastPossibleMsgTime_: " << lastPossibleMsgTime_);
     // ROS_INFO_STREAM("DIFF: " << (lastPossibleMsgTime_ - lastReceivedPacketRosTime_).toNSec());
 
-    if ( (duration_ > 0) && (frame.frame_index > 5 ) )
+    if ( (duration_ > 0) && (frame.frame_index > 1 ) )
     {
       if (lastReceivedPacketRosTime_.toNSec() > lastPossibleMsgTime_.toNSec())
       {
          ROS_ERROR("The Hesai Computer time rolled back in time while recording. i.e. the header time of the packet is not within the bag. Exitting.");
+         ROS_ERROR_STREAM("Received Packet: " << lastReceivedPacketRosTime_ << " Last Possible Packet: " << lastPossibleMsgTime_);
          raise(SIGINT);
       }
       
@@ -560,7 +563,8 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
         ROS_INFO_STREAM("Last Packet time from the bag : " << lastPossibleMsgTime_);
         ROS_INFO_STREAM("Time Difference (Expect ~ 0s) : " << difff);
 
-        ROS_INFO_STREAM("\033[92m" << "Final Processed Message Ratio: " << frame.frame_index << "/" << totalNumberOfPackets_ << "\033[0m");
+        // +1 because the index is starting from 0. 
+        ROS_INFO_STREAM("\033[92m" << "Final Processed Message Ratio: " << frame.frame_index + 1 << "/" << totalNumberOfPackets_ << "\033[0m");
 
         driver_ptr_->lidar_ptr_->rosbagEnded_ = true;
       }
