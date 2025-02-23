@@ -44,6 +44,14 @@
 #include <boost/thread.hpp>
 #include "source_drive_common.hpp"
 
+#include <sensor_msgs/Image.h>
+#include <unordered_map>
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/opencv.hpp>
+#include <eigen3/Eigen/Core>
+#include <opencv2/core/eigen.hpp>
+#include <opencv2/core/core.hpp>
+#include <image_transport/image_transport.h>
 class SourceDriver
 {
 public:
@@ -81,7 +89,20 @@ public:
 
   std::shared_ptr<HesaiLidarSdk<LidarPointXYZIRT>> driver_ptr_;
 
+  
+  image_transport::Publisher rangePub;
+  image_transport::Publisher intensityPub;
+  std::shared_ptr<image_transport::ImageTransport> it_;
+  bool shouldIsave_ = true;
+
 protected:
+  void generateUnifiedRangeImage(const LidarDecodedFrame<LidarPointXYZIRT>& frame, Eigen::MatrixXf& proj_range, Eigen::MatrixXi& intensity_image);
+  // Save Auxilary images
+  void saveImages(const Eigen::MatrixXf& range_image, const Eigen::MatrixXi& intensity_image, const std::string& filename, const ros::Time& timestamp);
+  // Interpolate the range image
+  void interpolateDepthImage(Eigen::MatrixXf& range_image);
+  // Interpolate the intensity image
+  void interpolateIntensityImage(Eigen::MatrixXi& intensity_image);
   // Save Correction file subscribed by "ros_recv_correction_topic"
   void RecieveCorrection(const std_msgs::UInt8MultiArray& msg);
   // Save packets subscribed by 'ros_recv_packet_topic'
@@ -134,7 +155,11 @@ protected:
 inline void SourceDriver::Init(const YAML::Node& config)
 {
   nh_ = std::unique_ptr<ros::NodeHandle>(new ros::NodeHandle());
-  
+  it_ = std::make_shared<image_transport::ImageTransport>(*nh_);
+
+  rangePub = it_->advertise("/gt_box/hesai/range_image", 1);  
+  intensityPub = it_->advertise("/gt_box/hesai/intensity_image", 1);
+
   DriverParam driver_param;
   DriveYamlParam yaml_param;
   yaml_param.GetDriveYamlParam(config, driver_param);
@@ -195,15 +220,19 @@ inline void SourceDriver::Init(const YAML::Node& config)
   if(driver_param.input_param.send_packet_ros && driver_param.input_param.source_type != DATA_FROM_ROS_PACKET){
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacket, this, std::placeholders::_1, std::placeholders::_2)) ;
   }
-  if (driver_param.input_param.ros_send_packet_loss_topic != NULL_TOPIC) {
+  if ( (driver_param.input_param.ros_send_packet_loss_topic != NULL_TOPIC ) && (driver_param.input_param.ros_send_packet_loss_topic !="") ) {
     driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPacketLoss, this, std::placeholders::_1, std::placeholders::_2));
+  }else{
+    ROS_WARN_STREAM("Packet Loss Topic is not set. Packet Loss will not be published.");
   }
   if (driver_param.input_param.source_type == DATA_FROM_LIDAR) {
     if (driver_param.input_param.ros_send_correction_topic != NULL_TOPIC) {
       driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendCorrection, this, std::placeholders::_1));
     }
-    if (driver_param.input_param.ros_send_ptp_topic != NULL_TOPIC) {
+    if ((driver_param.input_param.ros_send_ptp_topic != NULL_TOPIC) && (driver_param.input_param.ros_send_ptp_topic !="")) {
       driver_ptr_->RegRecvCallback(std::bind(&SourceDriver::SendPTP, this, std::placeholders::_1, std::placeholders::_2));
+    }else{
+      ROS_WARN_STREAM("Packet ptp Topic is not set. PTP data will not be published.");
     }
   } 
   if (!driver_ptr_->Init(driver_param))
@@ -212,12 +241,10 @@ inline void SourceDriver::Init(const YAML::Node& config)
     exit(-1);
   }
   // We use sim time true so should be okay.
-  latestCloudStamp_ = ros::Time::now();
+  latestCloudStamp_ = ros::Time(0);
   lastPossibleMsgTime_ = ros::Time(0);
   // lastReceivedPacketRosTime_ = ros::Time(0);
   // lastlastReceivedPacketRosTime_ = ros::Time(0);
-  // print ros time now
-  std::cout << "ros time now:" << latestCloudStamp_ << std::endl;
 
   if (save_replayed_topics_to_rosbag_){
 
@@ -440,18 +467,18 @@ inline void SourceDriver::SendFiretime(const double *firetime_correction_)
 
 inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<LidarPointXYZIRT>& frame, const std::string& frame_id)
 {
-  sensor_msgs::PointCloud2 ros_msg;
 
+  // Initialize the range image with max range values
+  Eigen::MatrixXf range_image = Eigen::MatrixXf::Constant(32, 2000, 0.0);
+  Eigen::MatrixXi intensity_image = Eigen::MatrixXi::Constant(32, 2000, 0);
 
-  // Rarely, we have overflow issue due to reflected points or edge duplications. We truncate them.
-  uint32_t frameSize = frame.points_num;
   if (save_replayed_topics_to_rosbag_)
   {
-    if (frameSize > 64000)
-    {
-      frameSize = 64000;
-    }
+    generateUnifiedRangeImage(frame, range_image, intensity_image);
   }
+
+  sensor_msgs::PointCloud2 ros_msg;
+  const uint32_t frameSize = frame.points_num;
 
   int fields = 6;
   ros_msg.fields.clear();
@@ -481,6 +508,15 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
   for (size_t i = 0; i < frameSize; i++)
   {
     LidarPointXYZIRT point = frame.points[i];
+
+    // if (save_replayed_topics_to_rosbag_)
+    // {
+    //   float d = std::sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
+    //   if (( ( (point.ring >= 1 && point.ring <= 8) || (point.ring >= 25 && point.ring <= 32) ) && d > 50.0f) || ((point.ring <= 24 && point.ring >= 9) && d > 80.0f)) {
+    //     continue;  // Skip points beyond the specified range capability
+    //   }
+    // }
+
     *iter_x_ = point.x;
     *iter_y_ = point.y;
     *iter_z_ = point.z;
@@ -498,7 +534,12 @@ inline sensor_msgs::PointCloud2 SourceDriver::ToRosMsg(const LidarDecodedFrame<L
 
   latestCloudStamp_ = ros::Time().fromSec(frame.points[0].timestamp);
   ros::Time lastPointStamp_ = ros::Time().fromSec(frame.points[frame.points_num - 1].timestamp);
-    
+  
+  if (save_replayed_topics_to_rosbag_)
+  {
+    saveImages(range_image, intensity_image, "unified_range_image.png", latestCloudStamp_);
+  }
+
   ros_msg.header.stamp = latestCloudStamp_;
   ros_msg.header.frame_id = frame_id_;
 
@@ -667,6 +708,299 @@ inline void SourceDriver::RecieveCorrection(const std_msgs::UInt8MultiArray& msg
   while (1) {
     if (! driver_ptr_->lidar_ptr_->LoadCorrectionFromROSbag()) {
       break;
+    }
+  }
+}
+
+inline void SourceDriver::generateUnifiedRangeImage(const LidarDecodedFrame<LidarPointXYZIRT>& frame, Eigen::MatrixXf& proj_range, Eigen::MatrixXi& intensity_image) {
+
+  // Define Sensor variables
+
+  // Calculate the number of horizontal pixels based on an angular resolution of 0.18° per pixel.
+  int horizontal_resolution = static_cast<int>(360.0 / 0.18);  // Result: 2000
+  int vertical_resolution = 32;    // 128 channels corresponding to vertical levels
+
+  // Angle bounds and scaling for pixel mapping
+  float azimuth_min = 0.0f * M_PI / 180.0f;
+  float azimuth_max = 360.0f * M_PI / 180.0f;
+  float elevation_min = -15.985f * M_PI / 180.0f;
+  float elevation_max = 14.966f * M_PI / 180.0f;
+
+  float azimuth_scale = (horizontal_resolution - 1.0f) / (azimuth_max - azimuth_min);
+  float elevation_scale = (vertical_resolution - 1.0) / (elevation_max - elevation_min);
+
+  for (size_t i = 0; i < frame.points_num; i++){
+    LidarPointXYZIRT pt = frame.points[i];
+
+    int ring_index = pt.ring;
+    if (ring_index < 0 || ring_index >= vertical_resolution) {
+      throw std::out_of_range("Ring_index is out of range (0-32 for HesaiXT32): " + std::to_string(ring_index));
+    }
+
+    float d = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+    float azimuth_angle = std::atan2(pt.x, pt.y);
+    float elevation_angle = std::asin(pt.z / d);  
+
+    if (azimuth_angle < 0){ 
+      azimuth_angle += 2.0f * M_PI;  // Normalize to [0, 2π)
+    }
+
+    uint16_t x =  std::round((azimuth_angle - azimuth_min) * azimuth_scale);
+    uint16_t y =  vertical_resolution - std::round((elevation_angle - elevation_min) * elevation_scale);
+    // int y = ring_index;
+
+
+    if (y < 0 || y > vertical_resolution){
+      throw std::out_of_range("Pixel coordinate y is out of bounds: " + std::to_string(y));
+    }
+
+    if (x < 0 || x > horizontal_resolution){
+      throw std::out_of_range("Pixel coordinate x is out of bounds: " + std::to_string(x));
+    }
+
+    // Compute range and update the image
+    // Based on accuracy @10% reflectivity
+    if (( ( (ring_index >= 1 && ring_index <= 8) || (ring_index >= 25 && ring_index <= 32) ) && d > 50.0f) || ((ring_index <= 24 && ring_index >= 9) && d > 80.0f)) {
+      // ROS_INFO_STREAM("Skipping point at index " << i 
+      //         << " (ring: " << ring_index 
+      //         << ", distance: " << d 
+      //         << ", azimuth: " << azimuth_angle << ")");
+      continue;  // Skip points beyond the specified range capability
+    }
+
+    // Naively filter close points. This is not ideal, but it is a simple way to avoid artifacts.
+    if (d < 0.5f)
+    {
+      continue;
+    }
+
+    // Update the range image with the minimum range if multiple points map to the same pixel
+    if (proj_range(y, x) == 0.0f || d < proj_range(y, x)) {
+      proj_range(y, x) = d;
+      intensity_image(y, x) = pt.intensity;
+    }
+  }
+
+  // interpolateDepthImage(proj_range);
+  // interpolateIntensityImage(intensity_image);
+
+}
+
+inline void SourceDriver::saveImages(const Eigen::MatrixXf& range_image, 
+const Eigen::MatrixXi& intensity_image, const std::string& filename, const ros::Time& timestamp) {
+  
+  // Convert Eigen matrix to OpenCV matrix
+  cv::Mat rangeImageCV;
+  cv::eigen2cv(range_image, rangeImageCV);
+  
+  sensor_msgs::ImagePtr rangeImageRos;
+  rangeImageRos = cv_bridge::CvImage(std_msgs::Header(), "32FC1", rangeImageCV).toImageMsg();
+
+  rangeImageRos->header.stamp = timestamp;
+  rangeImageRos->header.frame_id = frame_id_;
+  rangeImageRos->encoding = "32FC1";  // 32-bit floating-point single-channel image
+
+  {
+    std::lock_guard<std::mutex> lock(rosbagMutex_);
+    outputBag.write("/gt_box/hesai/range_image", timestamp, *rangeImageRos);
+  }
+
+  if (rangePub.getNumSubscribers() > 0) {
+    rangePub.publish(rangeImageRos);
+  }
+
+  // Generate Intensity Image
+  cv::Mat intensityImage_cv;
+  cv::eigen2cv(intensity_image, intensityImage_cv);
+
+  cv::normalize(intensityImage_cv, intensityImage_cv, 0, 255, cv::NORM_MINMAX);
+  intensityImage_cv.convertTo(intensityImage_cv, CV_8UC1);
+
+  sensor_msgs::ImagePtr msgIntensity;
+  msgIntensity = cv_bridge::CvImage(std_msgs::Header(), "mono8", intensityImage_cv).toImageMsg();
+
+  msgIntensity->header.stamp = timestamp;
+  msgIntensity->header.frame_id = frame_id_;
+  msgIntensity->encoding = "mono8";
+
+  {
+    std::lock_guard<std::mutex> lock(rosbagMutex_);
+    outputBag.write("/gt_box/hesai/intensity_image", timestamp, *msgIntensity);
+  }
+
+  if (intensityPub.getNumSubscribers() > 0) {
+    intensityPub.publish(msgIntensity);
+  }
+
+  // For debug purposes
+  // if(shouldIsave_){
+  //   cv::Mat depthImage8U;
+  //   intensityImage_cv.convertTo(depthImage8U, CV_8UC1, 255.0 / 255.0);  // Scale 0-5m to 0-65535
+  //   cv::imwrite("/home/tutuna/Videos/2024-11-14-13-45-37_heap_testsite/image_test/intensity.png", depthImage8U);
+  //   shouldIsave_ = false;
+  // }
+
+}
+
+inline void SourceDriver::interpolateIntensityImage(Eigen::MatrixXi& intensity_image) {
+
+  const int rows = intensity_image.rows();
+  const int cols = intensity_image.cols();
+
+  // Offsets for the 3x3 neighborhood
+  const int offsets[8][2] = {{-1, -1}, {-1, 0}, {-1, 1},
+                              { 0, -1},         { 0, 1},
+                              { 1, -1}, { 1, 0}, { 1, 1}};
+
+  const int first_row_offsets[5][2] = {{0, -1}, {0, 1}, {1, 0}, {1, -1}, {1, 1}};
+
+
+  // Iterate over each pixel (skip border pixels)
+  for (int y = 0; y < rows / 2 + 2; ++y) {
+    for (int x = 1; x < cols - 1; ++x) {
+      int& pixel = intensity_image(y, x);
+
+      // Interpolate only if the pixel value is 50.0f
+      if (pixel != 0) {
+        continue;
+      }
+
+      int sum = 0;
+      int count = 0;
+      bool valid = true;
+      int min_intensity = std::numeric_limits<int>::max();
+      int max_intensity = std::numeric_limits<int>::lowest();
+
+      const int (*current_offsets)[2];
+      int offset_count;
+
+      if (y == 0) {
+          // Use special offsets for the first row
+          current_offsets = first_row_offsets;
+          offset_count = 5;
+      } else {
+          // Use general offsets for other rows
+          current_offsets = offsets;
+          offset_count = 8;
+      }
+
+      // Check 8 neighbors
+      for (int i = 0; i < offset_count; ++i) {
+        int ny = y + current_offsets[i][0];
+        int nx = x + current_offsets[i][1];
+        if (ny < 0 || ny >= rows || nx < 0 || nx >= cols){
+          continue;
+        }
+
+        const int neighbor = intensity_image(ny, nx);
+
+        // Include only valid neighbors
+        if (neighbor != 0 && !std::isnan(neighbor)) {
+          sum += neighbor;
+          count++;
+          min_intensity = std::min(min_intensity, neighbor);
+          max_intensity = std::max(max_intensity, neighbor);
+
+          // Skip interpolation if depth difference exceeds threshold
+          if (max_intensity - min_intensity > 20) {
+              valid = false;
+              break;
+          }
+
+          // if (neighbor - 0 > 10) {
+          //     valid = false;
+          //     break;
+          // }
+        }
+      }
+
+      // Update the pixel if valid neighbors exist and depth difference is within range
+      if (valid && count > 0) {
+          pixel = std::round(sum / count);  // Assign interpolated value
+      }
+    
+    }
+  }
+
+
+}
+
+inline void SourceDriver::interpolateDepthImage(Eigen::MatrixXf& range_image) {
+  const int rows = range_image.rows();
+  const int cols = range_image.cols();
+
+  // Offsets for the 3x3 neighborhood
+  const int offsets[8][2] = {{-1, -1}, {-1, 0}, {-1, 1},
+                              { 0, -1},         { 0, 1},
+                              { 1, -1}, { 1, 0}, { 1, 1}};
+
+  const int first_row_offsets[5][2] = {{0, -1}, {0, 1}, {1, 0}, {1, -1}, {1, 1}};
+
+
+  // Iterate over each pixel (skip border pixels)
+  for (int y = 0; y < rows / 2 + 2; ++y) {
+    for (int x = 1; x < cols - 1; ++x) {
+      float& pixel = range_image(y, x);
+
+      // Interpolate only if the pixel value is 50.0f
+      if (pixel != 0.0f) {
+        continue;
+      }
+
+      float sum = 0.0f;
+      int count = 0;
+      bool valid = true;
+      float min_depth = std::numeric_limits<float>::max();
+      float max_depth = std::numeric_limits<float>::lowest();
+
+      const int (*current_offsets)[2];
+      int offset_count;
+
+      if (y == 0) {
+          // Use special offsets for the first row
+          current_offsets = first_row_offsets;
+          offset_count = 5;
+      } else {
+          // Use general offsets for other rows
+          current_offsets = offsets;
+          offset_count = 8;
+      }
+
+      // Check 8 neighbors
+      for (int i = 0; i < offset_count; ++i) {
+        int ny = y + current_offsets[i][0];
+        int nx = x + current_offsets[i][1];
+        if (ny < 0 || ny >= rows || nx < 0 || nx >= cols){
+          continue;
+        }
+
+        const float neighbor = range_image(ny, nx);
+
+        // Include only valid neighbors
+        if (neighbor != 0.0f && !std::isnan(neighbor)) {
+          sum += neighbor;
+          count++;
+          min_depth = std::min(min_depth, neighbor);
+          max_depth = std::max(max_depth, neighbor);
+
+          // Skip interpolation if depth difference exceeds threshold
+          if (max_depth - min_depth > 0.3f) {
+              valid = false;
+              break;
+          }
+
+          // if (neighbor - 0 > 10.0f) {
+          //     valid = false;
+          //     break;
+          // }
+        }
+      }
+
+      // Update the pixel if valid neighbors exist and depth difference is within range
+      if (valid && count > 0) {
+          pixel = sum / count;  // Assign interpolated value
+      }
+    
     }
   }
 }
