@@ -16,7 +16,7 @@ configure_file(
 #=======================================
 # Custom Point Type (XYZI, XYZIRT)
 #=======================================
-set(POINT_TYPE XYZI)
+set(POINT_TYPE XYZIRT)
 
 #=======================================
 # Compile setup (ORIGINAL, CATKIN, COLCON)
@@ -38,100 +38,81 @@ if (CMAKE_BUILD_TYPE STREQUAL "")
   add_definitions(-O3)
 endif()
 
-if($ENV{ROS_DISTRO} STREQUAL "humble")  # the ros2 humble requires c++17
-add_definitions(-std=c++17)
-else()
-add_definitions(-std=c++17)
-endif()
+add_definitions(-std=c++17 -Wwrite-strings)
 
-add_compile_options(-Wall)
 
+add_compile_options(-Wwrite-strings)
+
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -O3 -fopenmp -Wwrite-strings")
+SET(CMAKE_BUILD_TYPE Release)
 #========================
 # Dependencies Setup
 #========================
 
+find_package(Eigen3 REQUIRED)
+find_package(OpenCV 4 REQUIRED)
+
 #ROS#
 #Catkin#
-if($ENV{ROS_VERSION} MATCHES "1")
-  find_package(roscpp 1.12 QUIET)
-  find_package(roslib QUIET)
-  find_package(rosbag REQUIRED)
-  include_directories(${roscpp_INCLUDE_DIRS} ${roslib_INCLUDE_DIRS} ${rosbag_INCLUDE_DIRS})
-  set(ROS_LIBS ${roscpp_LIBRARIES} ${roslib_LIBRARIES} ${rosbag_LIBRARIES})
-  add_definitions(-DROS_FOUND)
-  add_definitions(-DRUN_IN_ROS_WORKSPACE)
 
-  find_package(catkin REQUIRED COMPONENTS
-    roscpp
-    sensor_msgs
-    std_msgs
-    message_generation
-    roslib
-    rosbag)
+find_package(roscpp 1.12 QUIET)
+find_package(roslib QUIET)
+find_package(rosbag REQUIRED)
+# include_directories(${roscpp_INCLUDE_DIRS} ${roslib_INCLUDE_DIRS} ${rosbag_INCLUDE_DIRS} ${OpenCV_INCLUDE_DIRS} ${Eigen_INCLUDE_DIRS})
+set(ROS_LIBS ${roscpp_LIBRARIES} ${roslib_LIBRARIES} ${rosbag_LIBRARIES})
+add_definitions(-DROS_FOUND)
+add_definitions(-DRUN_IN_ROS_WORKSPACE)
 
-  add_message_files(
-    FILES
-    "UdpPacket.msg"
-    "UdpFrame.msg"
-    "LossPacket.msg"
-    "Ptp.msg"
-    "Firetime.msg"
-  )
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  sensor_msgs
+  std_msgs
+  message_generation
+  cv_bridge
+  image_transport
+  roslib
+  rosbag)
 
-  generate_messages(
-    DEPENDENCIES
-    std_msgs
-  )
+add_message_files(
+  FILES
+  "UdpPacket.msg"
+  "UdpFrame.msg"
+  "LossPacket.msg"
+  "Ptp.msg"
+  "Firetime.msg"
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+)
+
+catkin_package(
+  DEPENDS OpenCV
+  CATKIN_DEPENDS roscpp roslib image_transport cv_bridge sensor_msgs std_msgs rosbag
+  INCLUDE_DIRS src
+)
 
 
-  catkin_package(CATKIN_DEPENDS 
-    sensor_msgs 
-    roslib)
+include_directories(
+  include
+  ${catkin_INCLUDE_DIRS}
+  ${image_transport_INCLUDE_DIRS}
+  ${cv_bridge_INCLUDE_DIRS}
+  ${roscpp_INCLUDE_DIRS}
+  ${roslib_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+  ${Eigen_INCLUDE_DIRS}
+)
+set(ROS_LIBS ${roscpp_LIBRARIES} ${roslib_LIBRARIES} ${rosbag_LIBRARIES})
 
-endif($ENV{ROS_VERSION} MATCHES "1")
+# # Set link libraries
+list(APPEND LINK_LIBS
+  ${OpenCV_LIBS}
+  ${Boost_LIBRARIES}
+)
 
-#ROS2#
-if($ENV{ROS_VERSION} MATCHES "2")
-
-  find_package(rclcpp QUIET)
-  if(rclcpp_FOUND)
-
-    message(=============================================================)
-    message("-- ROS2 Found. ROS2 Support is turned On.")
-    message(=============================================================)
-
-    add_definitions(-DROS2_FOUND)
-    include_directories(${rclcpp_INCLUDE_DIRS})
-    set(CMAKE_CXX_STANDARD 14)
-
-    find_package(ament_cmake REQUIRED)
-    find_package(sensor_msgs REQUIRED)
-    find_package(std_msgs REQUIRED)  
-    find_package(rclcpp_action REQUIRED)
-    find_package(rosidl_typesupport_c REQUIRED) 
-    find_package(rosidl_default_generators REQUIRED)
-    find_package(builtin_interfaces REQUIRED)
-    find_package(std_msgs REQUIRED)
-    
-    rosidl_generate_interfaces(${PROJECT_NAME}
-      "msg/msg_ros2/UdpPacket.msg"
-      "msg/msg_ros2/UdpFrame.msg"
-      "msg/msg_ros2/Firetime.msg"
-      "msg/msg_ros2/Ptp.msg"
-      "msg/msg_ros2/LossPacket.msg"
-      DEPENDENCIES builtin_interfaces std_msgs
-    )
-    ament_export_dependencies(rosidl_default_runtime)                 
-    
-  else(rclcpp_FOUND)
-
-    message(=============================================================)
-    message("-- ROS2 Not Found. ROS2 Support is turned Off.")
-    message(=============================================================)
-
-  endif(rclcpp_FOUND )
-endif($ENV{ROS_VERSION} MATCHES "2")
-
+list(APPEND LINK_LIBS ${catkin_LIBRARIES})
 
 #Others#
 find_package(yaml-cpp REQUIRED)
@@ -145,50 +126,14 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/src/driver/hesai_lidar_sdk)
 #========================
 # Build Setup
 #========================
-
-# add_executable(hesai_ros_driver_node
-#                node/hesai_ros_driver_node.cpp
-#                src/manager/node_manager.cpp
-#                )
 find_package(Boost REQUIRED COMPONENTS thread)
-include_directories(${Boost_INCLUDE_DIRS})
-link_directories(${Boost_LIBRARY_DIRS})
-
-# if install different cuda version, set the cuda path, like cuda-11.4
-# set(CUDA_TOOLKIT_ROOT_DIR /usr/local/cuda-11.4/)
-# find_package(CUDA REQUIRED)
-# find_package(CUDA )
-
-# if(CUDA_FOUND)
-  
-#   message(=============================================================)
-#   message("-- CUDA Found. CUDA Support is turned On.")
-#   message(=============================================================)
-
-#   link_directories($ENV{CUDA_PATH}/lib/x64)
-#   set(CUDA_NVCC_FLAGS "-arch=sm_75;-O2")#根据具体GPU性能更改算力参数
-#   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -rdc=true")
-#   list(APPEND CUDA_NVCC_FLAGS -Xcompiler -fPIC)
-
-#   CUDA_ADD_EXECUTABLE(hesai_ros_driver_node
-#                 node/hesai_ros_driver_node.cu
-#                 src/manager/node_manager.cu
-#                 ./src/driver/HesaiLidar_SDK_2.0/libhesai/UdpParserGpu/src/buffer.cu
-#                 )
-#   set(CUDA_LIBS "${CUDA_TOOLKIT_ROOT_DIR}/lib64/libcudart.so")
-
-#   target_link_libraries(hesai_ros_driver_node                   
-#                 ${YAML_CPP_LIBRARIES}
-#                 ${Boost_LIBRARIES}
-#                 source_lib
-#                 container_lib
-#                 ptcClient_lib
-#                 ptcParser_lib
-#                 log_lib
-#                 ${CUDA_LIBS}
-#                 # libhesai
-#     )
-# else(CUDA_FOUND)
+include_directories(
+  ${Boost_INCLUDE_DIRS}
+  )
+link_directories(
+  ${Boost_LIBRARY_DIRS} 
+  ${OpenCV_LIBRARY_DIRS}
+  )
 
   message(=============================================================)
   message("-- CUDA support disabled by GrandTour team.")
@@ -197,9 +142,12 @@ link_directories(${Boost_LIBRARY_DIRS})
                 node/hesai_ros_driver_node.cc
                 src/manager/node_manager.cc
                 )
-  target_link_libraries(hesai_ros_driver_node                   
+  target_link_libraries(hesai_ros_driver_node
+              ${catkin_LIBRARIES}                
               ${YAML_CPP_LIBRARIES}
               ${Boost_LIBRARIES}
+              ${OpenCV_LIBRARIES}
+              ${Eigen_LIBRARIES}
               source_lib
               container_lib
               ptcClient_lib
@@ -208,10 +156,9 @@ link_directories(${Boost_LIBRARY_DIRS})
               # libhesai
   )            
 
-# endif(CUDA_FOUND)
+target_compile_options(hesai_ros_driver_node PRIVATE -Wwrite-strings)
 
-
-  target_include_directories(hesai_ros_driver_node PRIVATE
+target_include_directories(hesai_ros_driver_node PRIVATE
   ${PROJECT_SOURCE_DIR}/src/driver/hesai_lidar_sdk/
   ${PROJECT_SOURCE_DIR}/src/driver/hesai_lidar_sdk/libhesai
   ${PROJECT_SOURCE_DIR}/src/driver/hesai_lidar_sdk/libhesai/Lidar
@@ -239,42 +186,11 @@ link_directories(${Boost_LIBRARY_DIRS})
 )  
 
 #Ros#
-if($ENV{ROS_VERSION} MATCHES "1")
-  target_link_libraries(hesai_ros_driver_node  ${ROS_LIBS})
-  install(TARGETS hesai_ros_driver_node
-          RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-          LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-          ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
-endif($ENV{ROS_VERSION} MATCHES "1")
+target_link_libraries(hesai_ros_driver_node  ${ROS_LIBS})
+install(TARGETS hesai_ros_driver_node
+        RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+        LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+        ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
 
-
-#Ros2#
-
-if($ENV{ROS_VERSION} MATCHES "2")
-  find_package(ament_index_cpp REQUIRED)
-  ament_target_dependencies(hesai_ros_driver_node 
-  "ament_index_cpp"
-  "rcl_interfaces"
-  "rclcpp" 
-  "rcutils"
-  "std_msgs" 
-  "sensor_msgs" 
-  # "tf2_geometry_msgs"
-  )
-  rosidl_target_interfaces(hesai_ros_driver_node  ${PROJECT_NAME} "rosidl_typesupport_cpp")
-
-  install(TARGETS
-    hesai_ros_driver_node
-    DESTINATION lib/${PROJECT_NAME})
-
-  install(DIRECTORY
-    launch
-    rviz
-    DESTINATION share/${PROJECT_NAME})
-    
-
-  ament_package()
-
-endif($ENV{ROS_VERSION} MATCHES "2")
 
 
