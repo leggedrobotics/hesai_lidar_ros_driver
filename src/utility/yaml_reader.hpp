@@ -1,9 +1,7 @@
 #pragma once
 
 #include <yaml-cpp/yaml.h>
-#include <iostream>  
-
-
+#include <iostream>
 
 template <typename T>
 inline void YamlReadAbort(const YAML::Node& yaml, const std::string& key, T& out_val)
@@ -45,4 +43,3 @@ inline YAML::Node YamlSubNodeAbort(const YAML::Node& yaml, const std::string& no
   }
   return ret;
 }
-
