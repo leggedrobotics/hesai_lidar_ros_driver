@@ -162,7 +162,10 @@ inline void SourceDriver::Init(const YAML::Node& config)
 
   DriverParam driver_param;
   DriveYamlParam yaml_param;
-  yaml_param.GetDriveYamlParam(config, driver_param);
+
+  std::string packageDirectory = ros::package::getPath("hesai_ros_driver");
+
+  yaml_param.GetDriveYamlParam(config, driver_param, packageDirectory);
   frame_id_ = driver_param.input_param.frame_id;
 
   save_replayed_topics_to_rosbag_ = driver_param.input_param.save_replayed_topics_to_rosbag;

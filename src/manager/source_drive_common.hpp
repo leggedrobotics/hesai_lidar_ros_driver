@@ -11,7 +11,7 @@ public:
   DriveYamlParam(){};
   ~DriveYamlParam(){};
 
-  bool GetDriveYamlParam(const YAML::Node& config, DriverParam& driver_param)
+  bool GetDriveYamlParam(const YAML::Node& config, DriverParam& driver_param, const std::string& packageDirectory)
   {
     YAML::Node driver_config = YamlSubNodeAbort(config, "driver");
     int source_type;
@@ -22,8 +22,16 @@ public:
     YamlRead<std::string>(driver_config, "host_ip_address", driver_param.input_param.host_ip_address, "192.168.1.100");
     YamlRead<std::string>(driver_config, "group_address", driver_param.input_param.multicast_ip_address, "");
     YamlRead<std::string>(driver_config, "pcap_path", driver_param.input_param.pcap_path, "");
-    YamlRead<std::string>(driver_config, "firetimes_path", driver_param.input_param.firetimes_path, "");
-    YamlRead<std::string>(driver_config, "correction_file_path", driver_param.input_param.correction_file_path, "");
+
+    std::cout << "\033[94m" << "Package Directory: " << packageDirectory << "\033[0m" << std::endl;
+
+    YamlRead<std::string>(driver_config, "firetimes_path", driver_param.input_param.firetimes_path, packageDirectory + "/config/PandarXT-32_firetime_correction.csv");
+    YamlRead<std::string>(driver_config, "correction_file_path", driver_param.input_param.correction_file_path, packageDirectory + "/config/PandarXT-32.csv");
+
+    std::cout << "\033[94m" << "correction_file_path: " << driver_param.input_param.correction_file_path << "\033[0m" << std::endl;
+    std::cout << "\033[94m" << "firetimes_path: " << driver_param.input_param.firetimes_path << "\033[0m" << std::endl;
+
+
     YamlRead<int>(driver_config, "standby_mode", driver_param.input_param.standby_mode, -1);
     YamlRead<int>(driver_config, "speed", driver_param.input_param.speed, -1);
     // decoder related

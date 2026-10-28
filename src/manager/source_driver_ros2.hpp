@@ -30,6 +30,7 @@
 
 #pragma once
 #include <rclcpp/rclcpp.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/u_int8_multi_array.hpp>
 #include <sstream>
@@ -119,7 +120,8 @@ inline void SourceDriver::Init(const YAML::Node& config)
 {
   DriverParam driver_param;
   DriveYamlParam yaml_param;
-  yaml_param.GetDriveYamlParam(config, driver_param);
+  std::string packageDirectory = ament_index_cpp::get_package_share_directory("hesai_ros_driver");
+  yaml_param.GetDriveYamlParam(config, driver_param, packageDirectory);
   frame_id_ = driver_param.input_param.frame_id;
 
   node_ptr_.reset(new rclcpp::Node("hesai_ros_driver_node"));
